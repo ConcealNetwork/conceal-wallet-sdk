@@ -125,13 +125,15 @@ describe("encodeAddress", () => {
 describe("encodeIntegratedAddress / makeIntegratedAddress", () => {
   const paymentId = "00112233445566aa"; // 8 bytes / 16 hex
 
-  it("produces a valid integrated address that decodes to the same keys", () => {
+  it("produces a valid integrated address that decodes to the same keys + payment id", () => {
     const keys = freshKeys();
     const integrated = encodeIntegratedAddress(keys.spend.pub, keys.view.pub, paymentId);
     expect(isValidAddress(integrated)).toBe(true);
     const decoded = decodeAddress(integrated);
     expect(decoded.spendPublicKey).toBe(keys.spend.pub);
     expect(decoded.viewPublicKey).toBe(keys.view.pub);
+    // decodeAddress now surfaces the integrated payment id (lib-js #6).
+    expect(decoded.paymentId).toBe(paymentId);
   });
 
   it("makeIntegratedAddress derives from a standard address + payment id", () => {
@@ -143,6 +145,7 @@ describe("encodeIntegratedAddress / makeIntegratedAddress", () => {
     const decoded = decodeAddress(integrated);
     expect(decoded.spendPublicKey).toBe(keys.spend.pub);
     expect(decoded.viewPublicKey).toBe(keys.view.pub);
+    expect(decoded.paymentId).toBe(paymentId);
   });
 
   it("throws on a malformed payment id", () => {
