@@ -46,6 +46,25 @@ export const KNOWN_MODULES: readonly string[] = [
 const KNOWN_MODULE_SET = new Set(KNOWN_MODULES);
 
 /**
+ * Action shorthands mirrored from conceal-2fa (`smart-message.ts:14-25`) so smart
+ * messages this SDK encodes are byte-identical to those produced by conceal-2fa
+ * peers. {@link encodeSmartMessage} maps a verbose action to its shorthand;
+ * {@link parseSmartMessage} reads either form (the shorthand is what lands on-chain,
+ * so consumers compare against the shorthand).
+ */
+export const ACTION_MAP: Readonly<Record<string, string>> = {
+  create: "c",
+  update: "u",
+  delete: "d",
+  complete: "x",
+  authorize: "a",
+  execute: "e",
+  register: "r",
+  verify: "v",
+  revoke: "k",
+};
+
+/**
  * Derive the 32-byte ChaCha message key shared by two parties.
  *
  * `derivation = generate_key_derivation(otherPublicKey, mySecretSpendKey)`;
@@ -152,7 +171,11 @@ export function isKnownSmartMessage(body: unknown): boolean {
   return parts !== null && parts.length >= 2 && KNOWN_MODULE_SET.has(parts[0] as string);
 }
 
-/** `encodeSmartMessage("vault","update","x")` → `"{vault,update,x}"`. */
+/**
+ * `encodeSmartMessage("vault","update","x")` → `"{vault,u,x}"`. A verbose `action`
+ * listed in {@link ACTION_MAP} is shortened to its single-char form on the way out so
+ * the encoding is byte-compatible with conceal-2fa peers; unknown actions pass through.
+ */
 export function encodeSmartMessage(module: string, action: string, ...data: string[]): string {
   const invalid = [module, action, ...data].find(
     (part) => part.includes(",") || part.includes("{") || part.includes("}"),
@@ -162,7 +185,8 @@ export function encodeSmartMessage(module: string, action: string, ...data: stri
       `Smart-message parts cannot contain "," "{" or "}": ${JSON.stringify(invalid)}`,
     );
   }
-  return `${PREFIX}${[module, action, ...data].join(",")}${SUFFIX}`;
+  const serializedAction = Object.hasOwn(ACTION_MAP, action) ? ACTION_MAP[action] : action;
+  return `${PREFIX}${[module, serializedAction, ...data].join(",")}${SUFFIX}`;
 }
 
 /** Split a smart message into its trimmed `[module, action, ...data]` parts, or `null`. */
@@ -170,4 +194,21 @@ export function parseSmartMessage(body: unknown): string[] | null {
   if (!isSmartMessage(body)) return null;
   const inner = (body as string).trim().slice(1, -1);
   return inner.split(",").map((part) => part.trim());
+}
+
+/**
+ * Convert a TTL duration in `minutes` to the absolute Unix expiry timestamp
+ * (seconds) the on-chain `0x05` TTL record stores — `nowSeconds + minutes*60`.
+ * Returns `0` ("no TTL") for `null`/`≤0`, matching the wallet's
+ * `messageTtlMinutesToUnix` (`messages/page.tsx:761-764`).
+ *
+ * `nowSeconds` is injected (defaults to the wall clock at the call boundary) to keep
+ * the function pure and deterministically testable.
+ */
+export function ttlMinutesToUnix(
+  minutes: number | null,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): number {
+  if (!minutes || minutes <= 0) return 0;
+  return nowSeconds + minutes * 60;
 }

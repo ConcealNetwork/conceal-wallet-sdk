@@ -26,10 +26,47 @@ import {
   generateKeyDerivation,
   generateKeyImage,
 } from "./crypto";
+import { decryptMessage, deriveMessageKey, encryptMessage } from "./messages";
 import type { Hex, WalletKeys } from "./types";
 
 /** Re-export the shared hex alias for convenience. */
 export type { Hex } from "./types";
+
+// ---------------------------------------------------------------------------
+// tx_extra record framing — message + TTL (ported from Cn.ts:76-84 / 2266-2332,
+// TransactionsExplorer.ts:81-93 / 129-179 / 442-493, Varint.ts decode).
+// ---------------------------------------------------------------------------
+
+/** tx_extra record tag — padding (zero-run, no size byte). */
+export const TX_EXTRA_TAG_PADDING = 0x00;
+/** tx_extra record tag — 32-byte tx public key `R` (no size byte; fixed 32 bytes). */
+export const TX_EXTRA_TAG_PUBKEY = 0x01;
+/** tx_extra record tag — nonce (has a size byte; sub-tags = plaintext / encrypted payment id). */
+export const TX_EXTRA_NONCE = 0x02;
+/** tx_extra record tag — merge-mining (has a size byte). */
+export const TX_EXTRA_MERGE_MINING_TAG = 0x03;
+/** tx_extra record tag — encrypted message (size byte = ciphertext length). */
+export const TX_EXTRA_MESSAGE_TAG = 0x04;
+/** tx_extra record tag — TTL (size byte = value-varint byte length). */
+export const TX_EXTRA_TTL = 0x05;
+/** tx_extra record tag — mysterious minergate (has a size byte). */
+export const TX_EXTRA_MYSTERIOUS_MINERGATE_TAG = 0xde;
+
+/** Nonce sub-tag (first byte of a `0x02` record's data) — plaintext payment id. */
+export const TX_EXTRA_NONCE_PAYMENT_ID = 0x00;
+/** Nonce sub-tag (first byte of a `0x02` record's data) — encrypted payment id. */
+export const TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID = 0x01;
+
+/** Trailing zero bytes in the encrypted-message plaintext frame. */
+export const TX_EXTRA_MESSAGE_CHECKSUM_SIZE = 4;
+/** Single-byte length-field cap: the encrypted message can be at most 255 bytes. */
+export const MAX_CIPHERTEXT_BYTES = 255;
+/** Max UTF-8 body bytes (255 ciphertext cap − 4-byte checksum), the `MAX_MESSAGE_SIZE` scalar. */
+export const MAX_MESSAGE_BODY_BYTES = MAX_CIPHERTEXT_BYTES - TX_EXTRA_MESSAGE_CHECKSUM_SIZE;
+/** Recipient self-output amount (atomic) that marks a transaction as a message. */
+export const MESSAGE_TX_AMOUNT_ATOMIC = 100;
+/** Remote-node fee (atomic), paid as a second destination on a non-TTL message. */
+export const REMOTE_NODE_FEE_ATOMIC = 10000;
 
 // ---------------------------------------------------------------------------
 // SCAN
@@ -280,6 +317,15 @@ export interface BuildTransactionInput {
   mixin: number;
   /** Dust threshold; outputs at or below this are skipped during selection. */
   dustThreshold?: number;
+  /**
+   * Optional hook to append extra `tx_extra` records (e.g. a message + TTR) AFTER the
+   * `"01" + R` tx-public-key record and BEFORE the prefix is hashed/signed, so the
+   * records are part of the signed prefix (matching `Cn.ts:2266 → 2321 → 2328`). It
+   * receives the freshly generated tx keypair so the caller can key an encrypted
+   * message off the tx secret `r`. Return is the hex to append (no leading `0x`); an
+   * empty/absent return leaves the default `"01" + R` extra byte-identical.
+   */
+  buildExtraRecords?: (txKeys: { secretKey: Hex; publicKey: Hex }) => Hex;
 }
 
 /** One assembled, signed input (ring member view) of a {@link BuiltTransaction}. */
@@ -324,6 +370,12 @@ export interface BuiltTransaction {
   sentAmount: number;
   /** Change returned to the sender (0 when inputs match the total exactly). */
   changeAmount: number;
+  /**
+   * The `tx_extra` field as serialized on chain: `"01" + R` plus any records appended
+   * by {@link BuildTransactionInput.buildExtraRecords} (e.g. a message / TTL). Part of
+   * the signed prefix.
+   */
+  extra: Hex;
   /**
    * The real consensus transaction prefix hash the ring signatures were computed
    * over — `cn_fast_hash` of the header-only serialization
@@ -535,6 +587,23 @@ export function buildTransaction(input: BuildTransactionInput): BuiltTransaction
   const txSecretKey = ccxCrypto.sc_reduce32(randomScalarHex()) as Hex;
   const txPublicKey = ccxCrypto.ge_scalarmult_base(txSecretKey) as Hex;
 
+  // tx_extra = TX_EXTRA_TAG_PUBKEY (0x01) + 32-byte R, then any caller-appended
+  // records (message/TTL), keyed off the tx secret. Default (no hook) is byte-
+  // identical to the original `"01" + R`.
+  const extraRecords = input.buildExtraRecords?.({
+    secretKey: txSecretKey,
+    publicKey: txPublicKey,
+  });
+  if (
+    extraRecords !== undefined &&
+    (extraRecords.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(extraRecords))
+  ) {
+    // The hook's output is concatenated into the signed prefix — reject a
+    // malformed (odd-length / non-hex) return rather than sign corrupt bytes.
+    throw new Error("buildExtraRecords must return an even-length hex string.");
+  }
+  const extra = `01${txPublicKey}${extraRecords ?? ""}` as Hex;
+
   // Build outputs: one-time public key per (decomposed) destination.
   const outputs: BuiltOutput[] = decomposed.map((dest, outIndex) => {
     const outDerivation = generateKeyDerivation(dest.viewPublicKey, txSecretKey);
@@ -584,8 +653,9 @@ export function buildTransaction(input: BuildTransactionInput): BuiltTransaction
       amount: out.amount,
       target: { type: "txout_to_key", data: { key: out.publicKey } },
     })),
-    // tx_extra: TX_EXTRA_TAG_PUBKEY (0x01) followed by the 32-byte tx public key R.
-    extra: `01${txPublicKey}`,
+    // tx_extra: TX_EXTRA_TAG_PUBKEY (0x01) + the 32-byte tx public key R, plus any
+    // caller-appended records (message/TTL) — part of the signed prefix.
+    extra,
     signatures: [],
   };
 
@@ -627,6 +697,7 @@ export function buildTransaction(input: BuildTransactionInput): BuiltTransaction
     inputsAmount,
     sentAmount,
     changeAmount,
+    extra,
     prefixHash,
     serialized: raw as Hex,
     hash: hash as Hex,
@@ -678,4 +749,313 @@ function randomScalarHex(): Hex {
   let hex = "";
   for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
   return hex as Hex;
+}
+
+// ---------------------------------------------------------------------------
+// MESSAGE TRANSACTIONS — tx_extra framing, TTL, scan-time extraction
+// ---------------------------------------------------------------------------
+
+const MSB = 0x80;
+const REST = 0x7f;
+const TWO_POWER_SEVEN = 2 ** 7;
+
+/**
+ * Decode a single LEB128-style varint from `buf` starting at `offset`, returning the
+ * decoded number. Ported verbatim from the legacy `Varint.decode` (`Varint.ts:53-73`)
+ * so TTL values decode exactly as the wallet decodes them. Throws on an unterminated
+ * varint.
+ */
+function decodeVarint(buf: ArrayLike<number>, offset = 0): number {
+  let res = 0;
+  let shift = 1;
+  let counter = offset;
+  let b: number;
+  const l = TWO_POWER_SEVEN ** (buf.length - offset < 8 ? (buf.length - offset) * 7 : 49);
+
+  do {
+    if (shift > l || counter >= buf.length) {
+      // Past the buffer end (unterminated) or beyond the safe magnitude bound.
+      throw new RangeError("Could not decode varint (unterminated or too large)");
+    }
+    b = buf[counter++] as number;
+    res += (b & REST) * shift;
+    shift = shift * TWO_POWER_SEVEN;
+  } while (b >= MSB);
+
+  return res;
+}
+
+/** A hex string's byte length (two hex chars per byte). */
+function hexByteLength(hex: Hex): number {
+  return hex.length / 2;
+}
+
+/** One byte (00–ff) as two lowercase hex chars. */
+function byteToHex(value: number): Hex {
+  return `0${value.toString(16)}`.slice(-2) as Hex;
+}
+
+/**
+ * Encode a `0x04` message record: `"04" + 1-byte-len + ciphertext`. The single-byte
+ * length field caps the ciphertext at {@link MAX_CIPHERTEXT_BYTES} (255) bytes —
+ * anything larger would frame a corrupt, undecryptable record on-chain, so throw
+ * (matching `Cn.ts:2302-2304`).
+ */
+export function encodeMessageExtra(ciphertextHex: Hex): Hex {
+  const byteLength = hexByteLength(ciphertextHex);
+  if (!Number.isInteger(byteLength)) {
+    throw new Error("Ciphertext hex must have an even length.");
+  }
+  if (byteLength > MAX_CIPHERTEXT_BYTES) {
+    throw new Error(
+      `Encrypted message too long: ${byteLength} bytes (max ${MAX_CIPHERTEXT_BYTES}).`,
+    );
+  }
+  return `${byteToHex(TX_EXTRA_MESSAGE_TAG)}${byteToHex(byteLength)}${ciphertextHex}` as Hex;
+}
+
+/**
+ * Encode a `0x05` TTL record: `"05" + varint(byteLenOfValueVarint) + varint(ttlUnixSeconds)`.
+ * The TTL value is an absolute Unix expiry timestamp in seconds (not a duration).
+ * Mirrors `Cn.ts:2329-2331`. Throws for a non-positive/invalid TTL (use `0`/omit for
+ * "no TTL" — `encodeTtlExtra` is only called when a TTL applies).
+ */
+export function encodeTtlExtra(ttlUnixSeconds: number): Hex {
+  if (!Number.isInteger(ttlUnixSeconds) || ttlUnixSeconds <= 0) {
+    throw new Error("TTL must be a positive integer Unix timestamp (seconds).");
+  }
+  const ttlStr = cnutils.encode_varint(ttlUnixSeconds) as Hex;
+  const ttlSize = cnutils.encode_varint(hexByteLength(ttlStr)) as Hex;
+  return `${byteToHex(TX_EXTRA_TTL)}${ttlSize}${ttlStr}` as Hex;
+}
+
+/** A parsed `0x04` message + `0x05` TTL pair pulled out of a tx `extra`. */
+export interface ScannedMessage {
+  /** Raw `0x04` record payload (the encrypted message), as hex. */
+  ciphertextHex: Hex;
+  /** Absolute Unix expiry seconds from the `0x05` record, or `0` when there is none. */
+  ttlUnixSeconds: number;
+}
+
+/**
+ * Walk a tx `extra` hex and pull out the `0x04` encrypted-message payload and the
+ * `0x05` TTL, returning `null` when no message record is present. The walk mirrors the
+ * legacy `TransactionsExplorer.parseExtra` (`:129-179`): `0x01` is a fixed 32-byte
+ * pubkey with no size byte; `0x02`/`0x03`/`0x04`/`0x05`/`0xde` carry a size byte; `0x00`
+ * is padding (terminates the walk). TTL is decoded with the ported {@link decodeVarint}.
+ */
+export function extractMessageFromExtra(extraHex: Hex): ScannedMessage | null {
+  if (
+    typeof extraHex !== "string" ||
+    extraHex.length === 0 ||
+    extraHex.length % 2 !== 0 ||
+    !/^[0-9a-fA-F]+$/.test(extraHex)
+  ) {
+    // Reject non-hex / odd-length up front so malformed daemon data can't
+    // propagate NaN bytes into the parse (returns null, never throws).
+    return null;
+  }
+  const bytes: number[] = [];
+  for (let i = 0; i < extraHex.length; i += 2) {
+    bytes.push(Number.parseInt(extraHex.slice(i, i + 2), 16));
+  }
+
+  let ciphertextHex: Hex | null = null;
+  let ttlUnixSeconds = 0;
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    const tag = bytes[offset] as number;
+
+    if (tag === TX_EXTRA_TAG_PADDING) {
+      // Padding is a zero-run that runs to the end; nothing more to read.
+      break;
+    }
+
+    let dataSize: number;
+    let dataStart: number;
+    if (tag === TX_EXTRA_TAG_PUBKEY) {
+      dataSize = 32;
+      dataStart = offset + 1;
+    } else if (
+      tag === TX_EXTRA_NONCE ||
+      tag === TX_EXTRA_MERGE_MINING_TAG ||
+      tag === TX_EXTRA_MESSAGE_TAG ||
+      tag === TX_EXTRA_TTL ||
+      tag === TX_EXTRA_MYSTERIOUS_MINERGATE_TAG
+    ) {
+      dataSize = bytes[offset + 1] as number;
+      dataStart = offset + 2;
+    } else {
+      // Unknown tag — stop rather than guess (matches the legacy bail-out).
+      break;
+    }
+
+    const dataEnd = dataStart + dataSize;
+    if (!Number.isInteger(dataSize) || dataEnd > bytes.length) {
+      // Truncated/corrupt record — stop the walk.
+      break;
+    }
+    const data = bytes.slice(dataStart, dataEnd);
+
+    if (tag === TX_EXTRA_MESSAGE_TAG) {
+      // First message record wins (a CCX message tx carries exactly one).
+      if (ciphertextHex === null) {
+        ciphertextHex = data.map((byte) => byteToHex(byte)).join("") as Hex;
+      }
+    } else if (tag === TX_EXTRA_TTL && data.length > 0) {
+      // A corrupt TTL varint must not abort scanning — stop the walk and keep
+      // whatever was parsed so far rather than throwing.
+      try {
+        ttlUnixSeconds = decodeVarint(data);
+      } catch {
+        break;
+      }
+    }
+
+    offset = dataEnd;
+  }
+
+  if (ciphertextHex === null) return null;
+  return { ciphertextHex, ttlUnixSeconds };
+}
+
+/** Inputs to {@link buildMessageTransaction}. */
+export interface BuildMessageTransactionInput {
+  /** Spending wallet keys (the tx message key is derived from the generated tx secret). */
+  keys: WalletKeys;
+  /** Message recipient (also the `MESSAGE_TX_AMOUNT_ATOMIC` self-output destination). */
+  recipient: { spendPublicKey: Hex; viewPublicKey: Hex };
+  /** Message body, ≤{@link MAX_MESSAGE_BODY_BYTES} (251) UTF-8 bytes (validated). */
+  body: string;
+  /** Change address — the sender's own decoded keys. */
+  changeKeys: { spendPublicKey: Hex; viewPublicKey: Hex };
+  /** All spendable outputs available to the wallet. */
+  unspentOutputs: SpendableOutput[];
+  /** Decoy outputs (one {@link DecoySet} per selected input amount). */
+  decoys: DecoySet[];
+  /** Network fee in atomic units (folded into change when `ttlUnixSeconds > 0`). */
+  fee: number;
+  /** Ring size minus one (decoys mixed per real input). */
+  mixin: number;
+  /** Absolute Unix expiry seconds; `0`/undefined = no TTL (a mined message). */
+  ttlUnixSeconds?: number;
+  /** Remote-node fee destination, appended only when there is no TTL. */
+  nodeFee?: { spendPublicKey: Hex; viewPublicKey: Hex; amount: number } | null;
+  /** Recipient self-output amount; defaults to {@link MESSAGE_TX_AMOUNT_ATOMIC} (100). */
+  messageAmount?: number;
+  /** Dust threshold; outputs at or below this are skipped during selection. */
+  dustThreshold?: number;
+}
+
+/**
+ * Build a broadcast-ready message-bearing transaction.
+ *
+ * A message tx is an ordinary CryptoNote spend with three conventions
+ * (`messages.md` §1, `wallet-operations.ts:477-617`):
+ *  - the recipient gets a tiny fixed self-output (`messageAmount`, default
+ *    {@link MESSAGE_TX_AMOUNT_ATOMIC} = 100 atomic) so their wallet scans + owns it;
+ *  - the encrypted body rides `tx_extra` as a `0x04` record, keyed off the tx's OWN
+ *    secret `r` via `deriveMessageKey(recipient.spendPublicKey, r)` — so the key is the
+ *    same one the recipient recovers from `(R, theirSpendSecret)`; the record is part
+ *    of the signed prefix;
+ *  - TTL (`ttlUnixSeconds > 0`) makes it a mempool-only message: a `0x05` TTL record is
+ *    appended, NO node-fee destination is added, and the fee is folded into change
+ *    (built with `fee: 0`) so the output total alone covers inputs — mirroring
+ *    `Cn.ts:2334-2337` and `TransactionsExplorer.ts:1061-1063`.
+ *
+ * Reuses {@link buildTransaction}'s selection/ring/sign machinery via the
+ * `buildExtraRecords` hook; only the destinations, fee rule, and extra records differ.
+ */
+export function buildMessageTransaction(input: BuildMessageTransactionInput): BuiltTransaction {
+  const bodyByteLength = new TextEncoder().encode(input.body).length;
+  if (bodyByteLength > MAX_MESSAGE_BODY_BYTES) {
+    throw new Error(
+      `Message body too long: ${bodyByteLength} UTF-8 bytes (max ${MAX_MESSAGE_BODY_BYTES}).`,
+    );
+  }
+
+  const ttlUnixSeconds = input.ttlUnixSeconds ?? 0;
+  const hasTtl = ttlUnixSeconds > 0;
+  const messageAmount = input.messageAmount ?? MESSAGE_TX_AMOUNT_ATOMIC;
+
+  // Recipient self-output marks the tx as a message. A node-fee destination is added
+  // only for a non-TTL (mined) message — a TTL message carries no node fee.
+  const destinations: Destination[] = [
+    {
+      spendPublicKey: input.recipient.spendPublicKey,
+      viewPublicKey: input.recipient.viewPublicKey,
+      amount: messageAmount,
+    },
+  ];
+  if (!hasTtl && input.nodeFee) {
+    destinations.push({
+      spendPublicKey: input.nodeFee.spendPublicKey,
+      viewPublicKey: input.nodeFee.viewPublicKey,
+      amount: input.nodeFee.amount,
+    });
+  }
+
+  // TTL message: the fee is folded into change. buildTransaction's change math is
+  // `inputs − (Σ destinations + fee)`, so building with `fee: 0` leaves the would-be
+  // fee in change and relaxes the balance check to outputs ≤ inputs (Cn.ts:2334-2337,
+  // TransactionsExplorer.ts:1061-1063). The reported `fee` on the result is preserved.
+  const buildFee = hasTtl ? 0 : input.fee;
+
+  const built = buildTransaction({
+    keys: input.keys,
+    destinations,
+    changeKeys: input.changeKeys,
+    unspentOutputs: input.unspentOutputs,
+    decoys: input.decoys,
+    fee: buildFee,
+    mixin: input.mixin,
+    dustThreshold: input.dustThreshold,
+    buildExtraRecords: ({ secretKey }) => {
+      const key = deriveMessageKey(input.recipient.spendPublicKey, secretKey);
+      const ciphertextHex = encryptMessage(input.body, key, 0);
+      const messageRecord = encodeMessageExtra(ciphertextHex);
+      return (hasTtl ? `${messageRecord}${encodeTtlExtra(ttlUnixSeconds)}` : messageRecord) as Hex;
+    },
+  });
+
+  // Report the fee that was actually signed: 0 for a TTL message (folded into
+  // change, so sent+change+fee === inputs holds) or input.fee otherwise. Do NOT
+  // override with input.fee for TTL — that would break the accounting invariant.
+  return built;
+}
+
+/**
+ * Scan + decrypt a message-bearing transaction in one call.
+ *
+ * Extracts the `0x04`/`0x05` records ({@link extractMessageFromExtra}), derives the
+ * message key from the tx public key `R` (from the `0x01` record) and the recipient's
+ * SPEND secret (`deriveMessageKey(R, keys.spend.sec)`), and decrypts the body. Owned
+ * outputs come from {@link scanTransactionOutputs}. Returns `null` when the tx carries
+ * no message record. `body` is `null` when the tx is a message but cannot be decrypted
+ * (wrong recipient, or a view-only key set with no usable spend secret).
+ */
+export function readMessageFromTransaction(
+  tx: RawTransaction,
+  keys: WalletKeys,
+): { body: string | null; ttlUnixSeconds: number; owned: OwnedOutput[] } | null {
+  const message = extractMessageFromExtra(tx.extra);
+  if (message === null) return null;
+
+  const txPublicKey = extractTransactionPublicKey(tx.extra);
+  const owned = scanTransactionOutputs(tx, keys);
+
+  let body: string | null = null;
+  if (txPublicKey !== null && isHex32(keys.spend?.sec)) {
+    try {
+      const key = deriveMessageKey(txPublicKey, keys.spend.sec);
+      body = decryptMessage(message.ciphertextHex, key, 0);
+    } catch {
+      // Malformed / wrongly-keyed message record — surface as no body rather than
+      // crashing the scan (matches legacy TransactionsExplorer.ts:766 try/catch).
+      body = null;
+    }
+  }
+
+  return { body, ttlUnixSeconds: message.ttlUnixSeconds, owned };
 }

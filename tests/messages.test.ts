@@ -1,6 +1,7 @@
 import { crypto as ccxCrypto } from "conceal-lib-js";
 import { describe, expect, it } from "vitest";
 import {
+  ACTION_MAP,
   decryptMessage,
   deriveMessageKey,
   encodeSmartMessage,
@@ -9,6 +10,7 @@ import {
   isSmartMessage,
   KNOWN_MODULES,
   parseSmartMessage,
+  ttlMinutesToUnix,
 } from "../src/messages";
 
 // Two real CCX accounts. A stands in for the sender (tx ephemeral keypair),
@@ -42,7 +44,8 @@ describe("encrypt/decrypt round-trip", () => {
 
   it("round-trips a known smart message (ChaCha12) and stays structural", () => {
     const body = encodeSmartMessage("vault", "update", "note-1");
-    expect(body).toBe("{vault,update,note-1}");
+    // "update" is an ACTION_MAP key → shortened to "u" (byte-compat with conceal-2fa).
+    expect(body).toBe("{vault,u,note-1}");
     expect(isKnownSmartMessage(body)).toBe(true);
 
     const ct = encryptMessage(body, keyAtoB);
@@ -98,19 +101,34 @@ describe("size guard (UTF-8 bytes, not chars)", () => {
 });
 
 describe("smart-message encode/parse", () => {
-  it("encodes module + action + data", () => {
+  it("encodes module + action + data (unknown actions pass through verbatim)", () => {
     expect(encodeSmartMessage("status", "alive")).toBe("{status,alive}");
-    expect(encodeSmartMessage("2FA", "create", "site", "token")).toBe("{2FA,create,site,token}");
+    // "create" is an ACTION_MAP key → shortened to "c"; "site"/"token" are data.
+    expect(encodeSmartMessage("2FA", "create", "site", "token")).toBe("{2FA,c,site,token}");
+  });
+
+  it("shortens ACTION_MAP actions for byte-compat with conceal-2fa peers", () => {
+    expect(encodeSmartMessage("vault", "update", "note-1")).toBe("{vault,u,note-1}");
+    expect(encodeSmartMessage("2FA", "delete", "x")).toBe("{2FA,d,x}");
+    expect(encodeSmartMessage("trust", "revoke")).toBe("{trust,k}");
+    // Every mapping in ACTION_MAP shortens the action's encoded form.
+    for (const [verbose, short] of Object.entries(ACTION_MAP)) {
+      expect(encodeSmartMessage("mod", verbose)).toBe(`{mod,${short}}`);
+    }
   });
 
   it("parses into trimmed parts", () => {
-    expect(parseSmartMessage("{ vault , update , x }")).toEqual(["vault", "update", "x"]);
+    expect(parseSmartMessage("{ vault , u , x }")).toEqual(["vault", "u", "x"]);
     expect(parseSmartMessage("plain text")).toBeNull();
   });
 
-  it("round-trips encode → parse", () => {
-    const parts = parseSmartMessage(encodeSmartMessage("to-do", "complete", "item-7"));
-    expect(parts).toEqual(["to-do", "complete", "item-7"]);
+  it("reads both the shorthand and any pre-shortened action on parse", () => {
+    // The encoded (shorthand) form is what lands on-chain; parse recovers it as-is.
+    const encoded = encodeSmartMessage("to-do", "complete", "item-7");
+    expect(encoded).toBe("{to-do,x,item-7}");
+    expect(parseSmartMessage(encoded)).toEqual(["to-do", "x", "item-7"]);
+    // A peer that already passed the shorthand parses identically.
+    expect(parseSmartMessage("{to-do,x,item-7}")).toEqual(["to-do", "x", "item-7"]);
   });
 
   it("rejects parts containing structural delimiters", () => {
@@ -124,5 +142,27 @@ describe("smart-message encode/parse", () => {
     }
     expect(isKnownSmartMessage("{unknown,action}")).toBe(false);
     expect(isKnownSmartMessage("not a smart message")).toBe(false);
+  });
+});
+
+describe("ttlMinutesToUnix", () => {
+  it("returns now + minutes*60 with an injected clock (pure/deterministic)", () => {
+    const now = 1_700_000_000;
+    expect(ttlMinutesToUnix(60, now)).toBe(now + 60 * 60);
+    expect(ttlMinutesToUnix(1, now)).toBe(now + 60);
+  });
+
+  it("returns 0 for null / zero / negative minutes (no TTL)", () => {
+    expect(ttlMinutesToUnix(null, 1_700_000_000)).toBe(0);
+    expect(ttlMinutesToUnix(0, 1_700_000_000)).toBe(0);
+    expect(ttlMinutesToUnix(-5, 1_700_000_000)).toBe(0);
+  });
+
+  it("defaults nowSeconds to the wall clock when omitted", () => {
+    const before = Math.floor(Date.now() / 1000);
+    const ttl = ttlMinutesToUnix(10);
+    const after = Math.floor(Date.now() / 1000);
+    expect(ttl).toBeGreaterThanOrEqual(before + 10 * 60);
+    expect(ttl).toBeLessThanOrEqual(after + 10 * 60);
   });
 });
