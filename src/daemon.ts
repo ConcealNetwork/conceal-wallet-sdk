@@ -12,12 +12,22 @@ import type { Hex } from "./types";
 
 /** Options for {@link createDaemonClient}. */
 export interface DaemonClientOptions {
-  /** Daemon proxy base URL. Must be `https://`; a trailing slash is enforced. */
+  /**
+   * Daemon proxy base URL. `https://` is always accepted; `http://` is accepted
+   * for loopback/private hosts (localhost, 127.x, 10.x, 192.168.x, 172.16–31.x,
+   * 100.64–127.x) or for any host when {@link allowInsecure} is set. A trailing
+   * slash is enforced.
+   */
   nodeUrl: string;
   /** `fetch` implementation to use. Defaults to `globalThis.fetch`. */
   fetch?: typeof fetch;
   /** Per-request timeout in milliseconds. Defaults to {@link DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /**
+   * Permit a plain-`http://` node URL for any host (e.g. a public self-hosted
+   * node on `:16000`). Off by default — https is required for non-local hosts.
+   */
+  allowInsecure?: boolean;
 }
 
 /** A single decoy output returned by `getrandom_outs`. */
@@ -74,19 +84,47 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 
 const JSON_HEADERS: Readonly<Record<string, string>> = { "Content-Type": "application/json" };
 
+/** True for loopback / RFC1918 private / CGNAT (Tailscale) hosts, where plain http is fine. */
+function isLocalOrPrivateHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (h === "localhost" || h === "127.0.0.1" || h === "::1" || h.endsWith(".localhost")) {
+    return true;
+  }
+  if (/^10\./.test(h) || /^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true; // 172.16–31
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true; // 100.64.0.0/10
+  return false;
+}
+
 /**
- * Normalize a daemon proxy URL: enforce `https://` and a trailing slash.
- * Throws on empty / non-`https` URLs.
+ * Normalize a daemon proxy URL and enforce a trailing slash. `https://` is
+ * always accepted. `http://` is accepted only for loopback/private hosts, or
+ * for any host when `allowInsecure` is set. Throws on empty / disallowed URLs.
  */
-export function normalizeNodeUrl(url: string): string {
+export function normalizeNodeUrl(url: string, opts: { allowInsecure?: boolean } = {}): string {
   const trimmed = url.trim();
   if (!trimmed) {
     throw new Error("Node URL is required.");
   }
-  if (!/^https:\/\//i.test(trimmed)) {
-    throw new Error("Node URL must start with https://");
+  const ensureSlash = (u: string) => (u.endsWith("/") ? u : `${u}/`);
+  if (/^https:\/\//i.test(trimmed)) {
+    return ensureSlash(trimmed);
   }
-  return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+  if (/^http:\/\//i.test(trimmed)) {
+    let host: string;
+    try {
+      host = new URL(trimmed).hostname;
+    } catch {
+      throw new Error("Node URL is not a valid URL.");
+    }
+    if (opts.allowInsecure || isLocalOrPrivateHost(host)) {
+      return ensureSlash(trimmed);
+    }
+    throw new Error(
+      "Node URL must start with https:// for a public host (set allowInsecure to permit http).",
+    );
+  }
+  throw new Error("Node URL must start with https:// or http://");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -102,7 +140,7 @@ function assertStatusOk(body: Record<string, unknown>, context: string): void {
 }
 
 export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
-  const base = normalizeNodeUrl(opts.nodeUrl);
+  const base = normalizeNodeUrl(opts.nodeUrl, { allowInsecure: opts.allowInsecure });
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new Error("No fetch implementation available; pass `fetch` in options.");

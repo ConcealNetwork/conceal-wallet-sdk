@@ -27,8 +27,26 @@ describe("normalizeNodeUrl", () => {
     expect(normalizeNodeUrl("  https://node.conceal.network/  ")).toBe(NODE);
   });
 
-  it("throws on a non-https URL", () => {
+  it("throws on a public http URL without allowInsecure", () => {
     expect(() => normalizeNodeUrl("http://node.conceal.network/")).toThrow(/https/);
+  });
+
+  it("allows http for a public host when allowInsecure is set", () => {
+    expect(normalizeNodeUrl("http://ccxapi.conceal.network:16000", { allowInsecure: true })).toBe(
+      "http://ccxapi.conceal.network:16000/",
+    );
+  });
+
+  it("allows http for loopback / private / CGNAT hosts without opt-in", () => {
+    expect(normalizeNodeUrl("http://127.0.0.1:16000")).toBe("http://127.0.0.1:16000/");
+    expect(normalizeNodeUrl("http://localhost:16800")).toBe("http://localhost:16800/");
+    expect(normalizeNodeUrl("http://192.168.1.50:16000")).toBe("http://192.168.1.50:16000/");
+    expect(normalizeNodeUrl("http://10.0.0.5:16000")).toBe("http://10.0.0.5:16000/");
+    expect(normalizeNodeUrl("http://100.100.90.103:16800")).toBe("http://100.100.90.103:16800/");
+  });
+
+  it("throws on a non-http(s) scheme", () => {
+    expect(() => normalizeNodeUrl("ftp://node.conceal.network/")).toThrow();
   });
 
   it("throws on an empty URL", () => {
