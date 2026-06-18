@@ -3,7 +3,7 @@
  * lib-js's loosely-typed `decode_address` and builds/parses the bare-address
  * payment links the Conceal wallets exchange (QR codes, `conceal:` links).
  */
-import { ccxCrypto } from "./crypto";
+import { ccxAddress, ccxCrypto } from "./crypto";
 import type { DecodedAddress, Hex } from "./types";
 
 /** Raw shape `crypto.decode_address` returns: public-key hex + optional integrated payment id. */
@@ -45,6 +45,49 @@ export function isValidAddress(address: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Encode a standard CCX address from spend + view **public** keys (64-char hex
+ * each). Lets a view-only wallet — which holds public keys but no seed —
+ * reconstruct its address without the WASM `create_address` path. Throws on
+ * malformed keys. (lib-js `address.encode_address`.)
+ */
+export function encodeAddress(spendPublicKey: Hex, viewPublicKey: Hex): string {
+  try {
+    return ccxAddress.encode_address(spendPublicKey, viewPublicKey) as string;
+  } catch (error) {
+    throw new Error(`Could not encode CCX address: ${(error as Error).message ?? error}`);
+  }
+}
+
+/**
+ * Encode a CCX **integrated** address — a standard address with an embedded
+ * 8-byte (16-hex) payment id, used to attribute incoming payments without a
+ * separate paymentId field. Throws on malformed keys or payment id.
+ * (lib-js `address.encode_integrated_address`.)
+ */
+export function encodeIntegratedAddress(
+  spendPublicKey: Hex,
+  viewPublicKey: Hex,
+  paymentId: Hex,
+): string {
+  try {
+    return ccxAddress.encode_integrated_address(spendPublicKey, viewPublicKey, paymentId) as string;
+  } catch (error) {
+    throw new Error(`Could not encode integrated address: ${(error as Error).message ?? error}`);
+  }
+}
+
+/**
+ * Derive an integrated address from an existing standard address and a 16-hex
+ * payment id — the common case for generating a per-invoice receive address.
+ * Decodes the base address to its public keys, then re-encodes with the id.
+ * Throws if the address is invalid or the payment id is malformed.
+ */
+export function makeIntegratedAddress(address: string, paymentId: Hex): string {
+  const { spendPublicKey, viewPublicKey } = decodeAddress(address);
+  return encodeIntegratedAddress(spendPublicKey, viewPublicKey, paymentId);
 }
 
 /** A request to be paid, as encoded in a CoinUri payment link / QR code. */

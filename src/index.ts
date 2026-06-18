@@ -14,7 +14,10 @@ export {
 export {
   buildPaymentUri,
   decodeAddress,
+  encodeAddress,
+  encodeIntegratedAddress,
   isValidAddress,
+  makeIntegratedAddress,
   type PaymentRequest,
   parsePaymentUri,
 } from "./address";

@@ -40,7 +40,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "conceal-lib-js": "https://github.com/ConcealNetwork/conceal-lib-js/releases/download/v0.2.6/conceal-lib-js-0.2.6.tgz"
+    "conceal-lib-js": "https://github.com/ConcealNetwork/conceal-lib-js/releases/download/v0.2.7/conceal-lib-js-0.2.7.tgz"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
