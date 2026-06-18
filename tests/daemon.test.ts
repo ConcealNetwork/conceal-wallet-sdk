@@ -302,3 +302,59 @@ describe("timeouts", () => {
     expect(DEFAULT_TIMEOUT_MS).toBe(10_000);
   });
 });
+
+describe("getInfo", () => {
+  it("maps the getinfo telemetry fields", async () => {
+    const fetchMock = jsonFetch({
+      status: "OK",
+      height: 2097670,
+      difficulty: 123456789,
+      transactions_pool_size: 7,
+      incoming_connections_count: 4,
+      outgoing_connections_count: 8,
+      white_peerlist_size: 250,
+      grey_peerlist_size: 1500,
+      alt_blocks_count: 113,
+      start_time: 1700000000,
+      version: "6.7.4",
+    });
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: fetchMock });
+    const info = await client.getInfo();
+    expect(info).toEqual({
+      height: 2097670,
+      difficulty: 123456789,
+      txPoolSize: 7,
+      incomingConnections: 4,
+      outgoingConnections: 8,
+      whitePeerlistSize: 250,
+      greyPeerlistSize: 1500,
+      altBlocksCount: 113,
+      startTime: 1700000000,
+      version: "6.7.4",
+      status: "OK",
+    });
+  });
+
+  it("defaults missing numeric fields to 0", async () => {
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: jsonFetch({ status: "OK" }) });
+    const info = await client.getInfo();
+    expect(info).toEqual({
+      height: 0,
+      difficulty: 0,
+      txPoolSize: 0,
+      incomingConnections: 0,
+      outgoingConnections: 0,
+      whitePeerlistSize: 0,
+      greyPeerlistSize: 0,
+      altBlocksCount: 0,
+      startTime: 0,
+      version: "",
+      status: "OK",
+    });
+  });
+
+  it("throws on a non-OK getinfo status", async () => {
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: jsonFetch({ status: "BUSY" }) });
+    await expect(client.getInfo()).rejects.toThrow(/getinfo/i);
+  });
+});

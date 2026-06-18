@@ -64,12 +64,35 @@ export interface SendRawTransactionResult {
   status: string;
 }
 
+/**
+ * Node telemetry from the daemon `getinfo` endpoint — numeric/string fields the
+ * wallet surfaces (difficulty, peers, mempool, version, last-block time). Fields
+ * default to `0`/`""` when a node omits them.
+ */
+export interface DaemonInfo {
+  height: number;
+  difficulty: number;
+  /** Pending tx count in the mempool (`transactions_pool_size`). */
+  txPoolSize: number;
+  incomingConnections: number;
+  outgoingConnections: number;
+  whitePeerlistSize: number;
+  greyPeerlistSize: number;
+  altBlocksCount: number;
+  /** Daemon start time (unix seconds); used for "last block N ago". */
+  startTime: number;
+  version: string;
+  status: string;
+}
+
 /** The typed Conceal daemon client. */
 export interface DaemonClient {
   /** Normalized base URL (always `https://…/`). */
   readonly nodeUrl: string;
   /** Current network height. */
   getHeight(): Promise<number>;
+  /** Node telemetry (`getinfo`): difficulty, peers, mempool, version, etc. */
+  getInfo(): Promise<DaemonInfo>;
   /** Node fee address (`""` when the node charges no fee). */
   getNodeFeeAddress(): Promise<string>;
   /** Submit a raw, hex-encoded transaction for relay. */
@@ -222,6 +245,28 @@ export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
     return height;
   }
 
+  async function getInfo(): Promise<DaemonInfo> {
+    const body = await request("getinfo", "GET");
+    assertStatusOk(body, "getinfo");
+    const num = (value: unknown): number => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : 0;
+    };
+    return {
+      height: num(body.height),
+      difficulty: num(body.difficulty),
+      txPoolSize: num(body.transactions_pool_size),
+      incomingConnections: num(body.incoming_connections_count),
+      outgoingConnections: num(body.outgoing_connections_count),
+      whitePeerlistSize: num(body.white_peerlist_size),
+      greyPeerlistSize: num(body.grey_peerlist_size),
+      altBlocksCount: num(body.alt_blocks_count),
+      startTime: num(body.start_time),
+      version: typeof body.version === "string" ? body.version : "",
+      status: typeof body.status === "string" ? body.status : "",
+    };
+  }
+
   async function getNodeFeeAddress(): Promise<string> {
     const body = await request("feeaddress", "GET");
     assertStatusOk(body, "feeaddress");
@@ -352,6 +397,7 @@ export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
   return {
     nodeUrl: base,
     getHeight,
+    getInfo,
     getNodeFeeAddress,
     sendRawTransaction,
     getRandomOuts,
