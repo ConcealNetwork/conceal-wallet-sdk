@@ -54,6 +54,24 @@ export function generateKeyImage(pubHex: Hex, secHex: Hex): Hex {
   return ccxCrypto.generate_key_image(pubHex, secHex) as Hex;
 }
 
+/**
+ * Single (non-ring) Schnorr-style signature over `prefixHash` with the keypair
+ * `(pub, sec)`. Used for deposit-withdraw inputs, which commit exactly one
+ * signature (legacy `CnNativeBride.generate_signature`).
+ */
+export function generateSignature(prefixHash: Hex, pubHex: Hex, secHex: Hex): Hex {
+  return ccxCrypto.generate_signature(prefixHash, pubHex, secHex) as Hex;
+}
+
+/**
+ * Verify a single {@link generateSignature} signature. Maps to lib-js
+ * `check_signature` (the legacy `CnNativeBride.verify_signature`); returns `true`
+ * when `sig` is a valid signature of `prefixHash` under `pub`.
+ */
+export function checkSignature(prefixHash: Hex, pubHex: Hex, sigHex: Hex): boolean {
+  return ccxCrypto.check_signature(prefixHash, pubHex, sigHex) as boolean;
+}
+
 /** Cryptographically-strong 32-byte entropy as hex — Node 20+ and browsers both
  *  expose `globalThis.crypto` (Web Crypto), so this is environment-agnostic. */
 export function randomSeed(): Hex {

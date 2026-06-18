@@ -29,6 +29,27 @@ export {
   type DaemonClientOptions,
   normalizeNodeUrl,
 } from "./daemon";
+/** Deposits / banking (type-`03`): interest, scan, locked/unlocked state. */
+export * as deposits from "./deposits";
+export {
+  COIN_UNIT_PLACES,
+  calculateDepositInterest,
+  DEPOSIT_MAX_TERM_MONTH,
+  DEPOSIT_MIN_AMOUNT_COIN,
+  DEPOSIT_MIN_TERM_BLOCK,
+  DEPOSIT_MIN_TERM_MONTH,
+  DEPOSIT_RATE_V3,
+  DEPOSIT_SMALL_WITHDRAW_FEE,
+  DEPOSIT_TX_FEE,
+  DEPOSIT_TX_VERSION,
+  type DepositInterestInput,
+  deriveDepositOneTimeKey,
+  findWithdrawnDepositIndexes,
+  M_COIN,
+  type OwnedDeposit,
+  type RawDepositInput,
+  recomputeDepositInterest,
+} from "./deposits";
 export {
   analyzeKeysShape,
   type KeysShape,
@@ -54,10 +75,13 @@ export {
   type WalletSync,
 } from "./sync";
 export type {
+  BuildDepositTransactionInput,
   BuildMessageTransactionInput,
+  BuildWithdrawTransactionInput,
   OwnedOutput,
   RawTransaction,
   ScannedMessage,
+  ScannedOutputs,
 } from "./transactions";
 /** Transaction scanning + (testnet-pending) spend building + message/TTL framing. */
 export * as transactions from "./transactions";
@@ -71,12 +95,15 @@ export type {
   WalletKeys,
 } from "./types";
 export {
+  applyScannedDeposits,
   applyScannedTransaction,
   type Balance,
   createWalletState,
   deserializeWalletState,
   getBalance,
+  getLockedDeposits,
   getTransactions,
+  getUnlockedDeposits,
   getUnspentOutputs,
   serializeWalletState,
   WALLET_STATE_VERSION,
