@@ -303,7 +303,9 @@ describe("openEncryptedWallet — review hardening (Codex HIGH + 2 MED, GLM LOW)
   });
 
   it("rejects (not throws) a malformed envelope with a bad-length nonce", () => {
-    expect(openEncryptedWallet({ data: [], nonce: "" } as EncryptedWalletEnvelope, "pw")).toBeNull();
+    expect(
+      openEncryptedWallet({ data: [], nonce: "" } as EncryptedWalletEnvelope, "pw"),
+    ).toBeNull();
     expect(
       openEncryptedWallet({ data: [1, 2, 3], nonce: "short" } as EncryptedWalletEnvelope, "pw"),
     ).toBeNull();
@@ -312,7 +314,10 @@ describe("openEncryptedWallet — review hardening (Codex HIGH + 2 MED, GLM LOW)
   it("rejects (not throws) non-array data", () => {
     expect(
       openEncryptedWallet(
-        { data: "notarray", nonce: "AAAAAAAAAAAAAAAAAAAAAA==" } as unknown as EncryptedWalletEnvelope,
+        {
+          data: "notarray",
+          nonce: "AAAAAAAAAAAAAAAAAAAAAA==",
+        } as unknown as EncryptedWalletEnvelope,
         "pw",
       ),
     ).toBeNull();
