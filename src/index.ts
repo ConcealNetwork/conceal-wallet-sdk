@@ -50,6 +50,36 @@ export {
   type RawDepositInput,
   recomputeDepositInterest,
 } from "./deposits";
+/** Wallet fusion / optimization (denomination-bucketed self-consolidation). */
+export * as fusion from "./fusion";
+export {
+  type BuildFusionTransactionInput,
+  buildFusionTransaction,
+  CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE,
+  DEFAULT_MIXIN,
+  DUST_THRESHOLD,
+  FUSION_TX_MAX_INPUT_COUNT,
+  FUSION_TX_MAX_SIZE,
+  FUSION_TX_MIN_IN_OUT_COUNT_RATIO,
+  FUSION_TX_MIN_INPUT_COUNT,
+  type FusionAmountApplicability,
+  type FusionInputSelection,
+  type FusionShuffle,
+  type FusionStatus,
+  type FusionStatusInput,
+  getApproximateMaximumInputCount,
+  getApproximateTransactionSize,
+  isAmountApplicableInFusionInput,
+  isOptimizationNeeded,
+  MAX_FUSION_OUTPUTS,
+  MINIMUM_FEE_V2,
+  NUM_BUCKETS,
+  OPTIMIZE_OUTPUTS,
+  OPTIMIZE_THRESHOLD,
+  PRETTY_AMOUNTS,
+  selectFusionInputs,
+  UPGRADE_HEIGHT_V4,
+} from "./fusion";
 export {
   analyzeKeysShape,
   type KeysShape,
