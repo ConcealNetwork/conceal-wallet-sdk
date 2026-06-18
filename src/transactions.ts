@@ -679,4 +679,3 @@ function randomScalarHex(): Hex {
   for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
   return hex as Hex;
 }
-

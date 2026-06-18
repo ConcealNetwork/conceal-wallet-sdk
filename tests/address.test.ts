@@ -1,13 +1,29 @@
 import { crypto as ccxCrypto } from "conceal-lib-js";
 import { describe, expect, it } from "vitest";
-import { buildPaymentUri, decodeAddress, isValidAddress, parsePaymentUri } from "../src/address";
+import {
+  buildPaymentUri,
+  decodeAddress,
+  encodeAddress,
+  encodeIntegratedAddress,
+  isValidAddress,
+  makeIntegratedAddress,
+  parsePaymentUri,
+} from "../src/address";
 
-/** A real CCX address generated via lib-js — never a hand-typed literal. */
-function freshAddress(): string {
+/** Real CCX keys + address generated via lib-js — never a hand-typed literal. */
+function freshKeys() {
   const seed = ccxCrypto.sc_reduce32(
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   );
-  return ccxCrypto.create_address(seed).public_addr;
+  return ccxCrypto.create_address(seed) as {
+    spend: { sec: string; pub: string };
+    view: { sec: string; pub: string };
+    public_addr: string;
+  };
+}
+
+function freshAddress(): string {
+  return freshKeys().public_addr;
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -82,5 +98,64 @@ describe("buildPaymentUri / parsePaymentUri", () => {
 
   it("throws when building from an invalid address", () => {
     expect(() => buildPaymentUri({ address: "ccx7bad" })).toThrow(/invalid ccx address/i);
+  });
+});
+
+describe("encodeAddress", () => {
+  it("reproduces the canonical address from spend/view public keys (parity)", () => {
+    const keys = freshKeys();
+    expect(encodeAddress(keys.spend.pub, keys.view.pub)).toBe(keys.public_addr);
+  });
+
+  it("round-trips through decodeAddress", () => {
+    const keys = freshKeys();
+    const encoded = encodeAddress(keys.spend.pub, keys.view.pub);
+    const decoded = decodeAddress(encoded);
+    expect(decoded.spendPublicKey).toBe(keys.spend.pub);
+    expect(decoded.viewPublicKey).toBe(keys.view.pub);
+    expect(decoded.paymentId).toBeUndefined();
+  });
+
+  it("throws a clear Error on malformed keys", () => {
+    expect(() => encodeAddress("zz", "a".repeat(64))).toThrow(/could not encode ccx address/i);
+    expect(() => encodeAddress("ab", "a".repeat(64))).toThrow(/could not encode ccx address/i);
+  });
+});
+
+describe("encodeIntegratedAddress / makeIntegratedAddress", () => {
+  const paymentId = "00112233445566aa"; // 8 bytes / 16 hex
+
+  it("produces a valid integrated address that decodes to the same keys", () => {
+    const keys = freshKeys();
+    const integrated = encodeIntegratedAddress(keys.spend.pub, keys.view.pub, paymentId);
+    expect(isValidAddress(integrated)).toBe(true);
+    const decoded = decodeAddress(integrated);
+    expect(decoded.spendPublicKey).toBe(keys.spend.pub);
+    expect(decoded.viewPublicKey).toBe(keys.view.pub);
+  });
+
+  it("makeIntegratedAddress derives from a standard address + payment id", () => {
+    const address = freshAddress();
+    const keys = freshKeys();
+    const integrated = makeIntegratedAddress(address, paymentId);
+    // Same wallet → integrated address embeds the same public keys, differs from base.
+    expect(integrated).not.toBe(address);
+    const decoded = decodeAddress(integrated);
+    expect(decoded.spendPublicKey).toBe(keys.spend.pub);
+    expect(decoded.viewPublicKey).toBe(keys.view.pub);
+  });
+
+  it("throws on a malformed payment id", () => {
+    const keys = freshKeys();
+    expect(() => encodeIntegratedAddress(keys.spend.pub, keys.view.pub, "0011")).toThrow(
+      /could not encode integrated address/i,
+    );
+    expect(() => makeIntegratedAddress(freshAddress(), "zzzz")).toThrow(
+      /could not encode integrated address/i,
+    );
+  });
+
+  it("makeIntegratedAddress throws on an invalid base address", () => {
+    expect(() => makeIntegratedAddress("ccx7bad", paymentId)).toThrow(/invalid ccx address/i);
   });
 });

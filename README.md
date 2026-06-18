@@ -12,7 +12,7 @@ conceal-wallet-sdk (typed TS wallet engine)          ← this package
 apps: next-wallet · mobile · lite                    ← UI only
 ```
 
-> **Status: alpha (0.1.x).** Implemented + tested (140 tests): accounts, mnemonics, addresses + payment URIs, encrypted messages + smart-message protocol, daemon RPC client, output **scanning**, wallet state, **sync**, and **broadcast-ready spend transactions** (input selection, decoys, ring signatures, key images, and byte-exact serialization via conceal-lib-js v0.2.6's mainnet-proven serializer). APIs may change pre-1.0; end-to-end broadcast against a live daemon is still recommended before production use.
+> **Status: alpha (0.1.x).** Implemented + tested (147 tests): accounts, mnemonics, addresses + payment URIs, **address encoding** (build standard/integrated addresses from public keys — view-only wallets, per-invoice integrated addresses), encrypted messages + smart-message protocol, daemon RPC client, output **scanning**, wallet state, **sync**, and **broadcast-ready spend transactions** (input selection, decoys, ring signatures, key images, and byte-exact serialization via conceal-lib-js v0.2.7's mainnet-proven serializer). APIs may change pre-1.0; end-to-end broadcast against a live daemon is still recommended before production use.
 
 ## Install
 
@@ -37,6 +37,32 @@ const restored = restoreFromMnemonic(account.mnemonic!);
 
 // Validate
 isValidMnemonic("…", "spanish"); // boolean
+```
+
+## Addresses
+
+Decode/validate any CCX address, or build one from public keys — no seed and no
+WASM required (handy for view-only wallets and per-invoice integrated addresses):
+
+```ts
+import {
+  decodeAddress,
+  encodeAddress,
+  encodeIntegratedAddress,
+  makeIntegratedAddress,
+  isValidAddress,
+} from "conceal-wallet-sdk";
+
+const { spendPublicKey, viewPublicKey } = decodeAddress("ccx7…");
+
+// Rebuild the address from its public keys (view-only wallet)
+encodeAddress(spendPublicKey, viewPublicKey); // "ccx7…"
+
+// Generate a per-invoice integrated address (embeds a 16-hex payment id)
+makeIntegratedAddress("ccx7…", "00112233445566aa"); // "ccx7… (integrated)"
+encodeIntegratedAddress(spendPublicKey, viewPublicKey, "00112233445566aa");
+
+isValidAddress("ccx7…"); // boolean
 ```
 
 ## Design

@@ -4,7 +4,13 @@
  * the SDK consumes these typed wrappers. lib-js is imported as a normal module
  * (no `window.concealjs` global) so the SDK works in Node, browsers, and bundlers.
  */
-import { crypto as ccxCrypto, cnutils, cypher, mnemonic } from "conceal-lib-js";
+import {
+  address as ccxAddress,
+  crypto as ccxCrypto,
+  cnutils,
+  cypher,
+  mnemonic,
+} from "conceal-lib-js";
 import type { Hex, WalletKeys } from "./types";
 
 /** Reduce 32 bytes of entropy (hex) modulo the Ed25519 group order → a valid scalar. */
@@ -59,4 +65,4 @@ export function randomSeed(): Hex {
 }
 
 // Re-export the lower-level namespaces for advanced consumers / internal modules.
-export { ccxCrypto, cnutils, cypher, mnemonic };
+export { ccxAddress, ccxCrypto, cnutils, cypher, mnemonic };
