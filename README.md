@@ -12,7 +12,7 @@ conceal-wallet-sdk (typed TS wallet engine)          ← this package
 apps: next-wallet · mobile · lite                    ← UI only
 ```
 
-> **Status: alpha (0.1.x).** Account/mnemonic/crypto are done and tested; address/messages/daemon/transactions/sync land next. APIs may change pre-1.0.
+> **Status: alpha (0.1.x).** Implemented + tested (137 tests): accounts, mnemonics, addresses + payment URIs, encrypted messages + smart-message protocol, daemon RPC client, output **scanning**, wallet state, and **sync**. The transaction **spend builder** is implemented (input selection, decoys, ring signatures, key images) but the byte-exact CryptoNote serialization / consensus prefix-hash is **testnet-pending** — that serializer isn't in conceal-lib-js yet ([conceal-lib-js#3](https://github.com/ConcealNetwork/conceal-lib-js/issues/3)). APIs may change pre-1.0.
 
 ## Install
 
