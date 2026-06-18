@@ -53,8 +53,13 @@ export {
   type SyncOptions,
   type WalletSync,
 } from "./sync";
-export type { OwnedOutput, RawTransaction } from "./transactions";
-/** Transaction scanning + (testnet-pending) spend building. */
+export type {
+  BuildMessageTransactionInput,
+  OwnedOutput,
+  RawTransaction,
+  ScannedMessage,
+} from "./transactions";
+/** Transaction scanning + (testnet-pending) spend building + message/TTL framing. */
 export * as transactions from "./transactions";
 export type {
   DecodedAddress,

@@ -389,6 +389,13 @@ describe("buildTransaction", () => {
     expect(built.txSecretKey).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("default extra is byte-identical to 01 + R (no hook)", () => {
+    const built = buildTransaction(baseInput());
+    expect(built.extra).toBe(`01${built.txPublicKey}`);
+    // And it is the extra fed to the serializer.
+    expect(structOf(built).extra).toBe(built.extra);
+  });
+
   it("derives R = rG and unique one-time output keys", () => {
     const built = buildTransaction(baseInput());
     expect(ccxCrypto.ge_scalarmult_base(built.txSecretKey)).toBe(built.txPublicKey);

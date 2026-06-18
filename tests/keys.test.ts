@@ -182,9 +182,9 @@ describe("analyzeKeysShape — hardened corrupt-input edges (review findings)", 
   // logic mis-handled (derive_pub with empty view → sec_key_to_pub("") crash;
   // ready-with-empty-view). Now they fail fast as `invalid`.
   it("does not request derive_pub when the view secret is missing", () => {
-    expect(analyzeKeysShape({ priv: { spend: "aa", view: "" }, pub: { spend: "", view: "" } })).toEqual(
-      { kind: "invalid" },
-    );
+    expect(
+      analyzeKeysShape({ priv: { spend: "aa", view: "" }, pub: { spend: "", view: "" } }),
+    ).toEqual({ kind: "invalid" });
   });
 
   it("accepts a view-only shape (no spend secret) when the view secret + spend pub are present", () => {
