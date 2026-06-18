@@ -9,10 +9,13 @@
  *  - SCAN: detect which outputs of a raw daemon transaction the wallet owns,
  *    recovering each owned output's amount, global index, one-time public key and
  *    spendable key image.
- *  - BUILD: assemble the structure of a signed (non-RingCT) CryptoNote spend —
- *    input selection, change/fee math, decoy-ring assembly, key images and ring
- *    signatures. The deterministic parts are fully exercised; final on-chain
- *    serialization is flagged as testnet-pending (see the NOTE on {@link buildTransaction}).
+ *  - BUILD: assemble and serialize a signed (non-RingCT) CryptoNote spend —
+ *    input selection, change/fee math, decoy-ring assembly, key images, ring
+ *    signatures over the real consensus prefix hash, and the broadcast-ready blob.
+ *    The byte-exact serialization, prefix hash and tx hash are produced by lib-js's
+ *    mainnet-proven serializer (`transactions.serializeTransactionWithHash` /
+ *    `getTransactionPrefixHash`), so {@link buildTransaction} returns a chain-accurate
+ *    transaction (see {@link BuiltTransaction.serialized}).
  */
 import { transactions as ccxTransactions } from "conceal-lib-js";
 import {
@@ -321,8 +324,16 @@ export interface BuiltTransaction {
   sentAmount: number;
   /** Change returned to the sender (0 when inputs match the total exactly). */
   changeAmount: number;
-  /** The prefix hash the ring signatures were computed over. */
+  /**
+   * The real consensus transaction prefix hash the ring signatures were computed
+   * over — `cn_fast_hash` of the header-only serialization
+   * (lib-js `getTransactionPrefixHash`).
+   */
   prefixHash: Hex;
+  /** Broadcast-ready transaction blob (full canonical serialization, hex). */
+  serialized: Hex;
+  /** Transaction hash — `cn_fast_hash` of the full serialized blob. */
+  hash: Hex;
 }
 
 /** A destination decomposed into a power-of-ten "digit" output for a non-RingCT tx. */
@@ -464,7 +475,7 @@ export function deriveInputKeyImage(
 }
 
 /**
- * Build a signed (non-RingCT) CryptoNote spend transaction *structure*.
+ * Build a broadcast-ready signed (non-RingCT) CryptoNote spend transaction.
  *
  * Faithfully ports the legacy `createTx` → `create_transaction` → `construct_tx`
  * flow over the audited lib-js primitives:
@@ -473,23 +484,26 @@ export function deriveInputKeyImage(
  *  3. Generate the tx keypair `(r, R = rG)`.
  *  4. For each destination + change, derive the one-time output public key
  *     `P_out = derive_public_key(generate_key_derivation(V_dest, r), i, S_dest)`.
- *  5. For each input: derive key image, assemble its decoy ring, sort inputs by
- *     descending key image (consensus).
- *  6. Compute a prefix hash over the structure and produce a ring signature per
- *     input via `crypto.generate_ring_signature`.
+ *  5. For each input: derive key image, assemble its decoy ring (key offsets are
+ *     RELATIVE — see below), sort inputs by descending key image (consensus).
+ *  6. Build the lib-js tx structure and compute the REAL consensus prefix hash via
+ *     `transactions.getTransactionPrefixHash` (`cn_fast_hash` of the header-only
+ *     serialization).
+ *  7. Sign each input's ring over that prefix hash via `crypto.generate_ring_signature`,
+ *     attach signatures in vin order, and serialize the canonical blob +
+ *     transaction hash via `transactions.serializeTransactionWithHash`.
  *
- * NOTE: TESTNET-PENDING. The byte-exact CryptoNote transaction *serialization*
- * (version/varint framing of vin/vout/extra/signatures into the canonical blob,
- * and therefore the consensus `get_tx_prefix_hash`) is NOT reproduced here — that
- * serializer lives in the legacy wallet, not in conceal-lib-js, and cannot be
- * verified byte-for-byte without submitting to a CCX testnet daemon. The
- * `prefixHash` used below is a deterministic hash of the assembled structure
- * (stable + sign-verifiable in tests) but is a PLACEHOLDER for the consensus
- * prefix hash. Before broadcasting, the structure must be serialized with the
- * real framing and re-signed over the true prefix hash, then validated against a
- * testnet node. The deterministic pieces this function does produce — selection,
- * fee/change math, decoy ring assembly, key images, and ring signatures over the
- * structure — are unit-tested and individually correct.
+ * CONSENSUS — RELATIVE key offsets: CryptoNote serializes ring members as relative
+ * offsets (first = absolute global index, rest = deltas). {@link assembleRing}
+ * already returns offsets in this relative form (it applies
+ * {@link absoluteToRelativeOffsets} internally), so they are passed to the
+ * serializer verbatim — they must NOT be converted again. This mirrors legacy
+ * `Cn.create_transaction`, which calls `abs_to_rel_offsets` once before serializing.
+ *
+ * The serializer is lib-js's mainnet-proven implementation, so the returned
+ * `serialized` blob and `hash` are byte-exact and broadcast-ready. (A live testnet
+ * broadcast is not exercised here; the byte-exact serialization via lib-js is the
+ * correctness bar.)
  */
 export function buildTransaction(input: BuildTransactionInput): BuiltTransaction {
   validateBuildInput(input);
@@ -553,9 +567,30 @@ export function buildTransaction(input: BuildTransactionInput): BuiltTransaction
   // Consensus orders inputs by descending key image.
   preInputs.sort((a, b) => (a.keyImage < b.keyImage ? 1 : a.keyImage > b.keyImage ? -1 : 0));
 
-  // NOTE: PLACEHOLDER prefix hash — see the function-level NOTE. Deterministic and
-  // sign-verifiable, but NOT the consensus serialization hash.
-  const prefixHash = computeStructurePrefixHash(txPublicKey, preInputs, outputs, fee);
+  // Assemble the lib-js tx structure for the REAL consensus prefix hash. The vin
+  // key_offsets are passed VERBATIM: assembleRing already produced them in relative
+  // form (first = absolute global index, rest = deltas), exactly what the serializer
+  // encodes — converting again would corrupt the ring (legacy converts once, here).
+  const struct: TxStruct = {
+    version: 1,
+    unlock_time: 0,
+    vin: preInputs.map((pre) => ({
+      type: "input_to_key",
+      amount: pre.amount,
+      key_offsets: pre.keyOffsets,
+      k_image: pre.keyImage,
+    })),
+    vout: outputs.map((out) => ({
+      amount: out.amount,
+      target: { type: "txout_to_key", data: { key: out.publicKey } },
+    })),
+    // tx_extra: TX_EXTRA_TAG_PUBKEY (0x01) followed by the 32-byte tx public key R.
+    extra: `01${txPublicKey}`,
+    signatures: [],
+  };
+
+  // Real consensus prefix hash = cn_fast_hash of the header-only serialization.
+  const prefixHash = ccxTransactions.getTransactionPrefixHash(struct) as Hex;
 
   const inputs: BuiltInput[] = preInputs.map((pre) => {
     const signatures = ccxCrypto.generate_ring_signature(
@@ -575,6 +610,14 @@ export function buildTransaction(input: BuildTransactionInput): BuiltTransaction
     };
   });
 
+  // Attach signatures in vin order (== preInputs order), then serialize the
+  // canonical broadcast blob + tx hash via lib-js's mainnet-proven serializer.
+  const signedStruct: TxStruct = {
+    ...struct,
+    signatures: inputs.map((inp) => inp.signatures),
+  };
+  const { raw, hash } = ccxTransactions.serializeTransactionWithHash(signedStruct);
+
   return {
     txPublicKey,
     txSecretKey,
@@ -585,7 +628,19 @@ export function buildTransaction(input: BuildTransactionInput): BuiltTransaction
     sentAmount,
     changeAmount,
     prefixHash,
+    serialized: raw as Hex,
+    hash: hash as Hex,
   };
+}
+
+/** lib-js transaction structure consumed by the serializer (`transactions.*`). */
+interface TxStruct {
+  version: number;
+  unlock_time: number;
+  vin: Array<{ type: "input_to_key"; amount: number; key_offsets: number[]; k_image: Hex }>;
+  vout: Array<{ amount: number; target: { type: "txout_to_key"; data: { key: Hex } } }>;
+  extra: Hex;
+  signatures: Hex[][];
 }
 
 /** Validate build inputs at the boundary; fail fast with clear messages. */
@@ -625,30 +680,3 @@ function randomScalarHex(): Hex {
   return hex as Hex;
 }
 
-/**
- * Deterministic hash over the assembled tx structure, used as the message the ring
- * signatures sign. NOTE: PLACEHOLDER for the consensus `get_tx_prefix_hash` — see
- * the {@link buildTransaction} NOTE. Stable across runs for the same structure, so
- * sign/verify round-trips are testable, but it is NOT the byte-exact serialization
- * the daemon hashes.
- */
-function computeStructurePrefixHash(
-  txPublicKey: Hex,
-  inputs: ReadonlyArray<{ keyImage: Hex; keyOffsets: number[] }>,
-  outputs: ReadonlyArray<{ amount: number; publicKey: Hex }>,
-  fee: number,
-): Hex {
-  let blob = txPublicKey;
-  for (const input of inputs) {
-    blob += input.keyImage;
-    for (const offset of input.keyOffsets) {
-      blob += cnutils.encode_varint(offset);
-    }
-  }
-  for (const output of outputs) {
-    blob += cnutils.encode_varint(output.amount);
-    blob += output.publicKey;
-  }
-  blob += cnutils.encode_varint(fee);
-  return ccxCrypto.cn_fast_hash(blob) as Hex;
-}

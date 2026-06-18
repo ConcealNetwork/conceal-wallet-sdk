@@ -449,6 +449,85 @@ describe("buildTransaction", () => {
     expect(imgs).toEqual(sorted);
   });
 
+  // Rebuild the lib-js tx struct from a BuiltTransaction exactly as buildTransaction
+  // does (vin in input order with RELATIVE key offsets, vout, extra = 01 || R), so
+  // tests can assert against lib-js's serializer directly.
+  function structOf(built: ReturnType<typeof buildTransaction>) {
+    return {
+      version: 1,
+      unlock_time: 0,
+      vin: built.inputs.map((i) => ({
+        type: "input_to_key" as const,
+        amount: i.amount,
+        key_offsets: i.keyOffsets,
+        k_image: i.keyImage,
+      })),
+      vout: built.outputs.map((o) => ({
+        amount: o.amount,
+        target: { type: "txout_to_key" as const, data: { key: o.publicKey } },
+      })),
+      extra: `01${built.txPublicKey}`,
+      signatures: built.inputs.map((i) => i.signatures),
+    };
+  }
+
+  it("prefixHash equals lib-js getTransactionPrefixHash of the assembled struct", () => {
+    const built = buildTransaction(baseInput());
+    const struct = structOf(built);
+    expect(built.prefixHash).toBe(ccxTransactions.getTransactionPrefixHash(struct));
+    // And the prefix hash is cn_fast_hash of the header-only serialization.
+    const headerOnly = ccxTransactions.serializeTransaction(struct, true);
+    expect(ccxCrypto.cn_fast_hash(headerOnly)).toBe(built.prefixHash);
+  });
+
+  it("returns a broadcast-ready serialized blob + tx hash (valid hex, round-trips)", () => {
+    const built = buildTransaction(baseInput());
+    // serialized is non-empty lowercase hex; hash is a 32-byte hex.
+    expect(built.serialized).toMatch(/^[0-9a-f]+$/);
+    expect(built.serialized.length % 2).toBe(0);
+    expect(built.hash).toMatch(/^[0-9a-f]{64}$/);
+
+    // The serialized blob matches lib-js's full serialization, and its header-only
+    // re-derivation yields the same prefixHash.
+    const struct = structOf(built);
+    const { raw, hash } = ccxTransactions.serializeTransactionWithHash(struct);
+    expect(built.serialized).toBe(raw);
+    expect(built.hash).toBe(hash);
+    expect(ccxCrypto.cn_fast_hash(ccxTransactions.serializeTransaction(struct, true))).toBe(
+      built.prefixHash,
+    );
+  });
+
+  it("serializes vin key_offsets in RELATIVE form (first absolute, rest small deltas)", () => {
+    // Real UTXO at global index 100; decoys at 200 and 300 → sorted ring 100,200,300.
+    // Relative offsets: [100, 100, 100] (first = absolute, rest = deltas).
+    const built = buildTransaction(baseInput());
+    expect(built.inputs).toHaveLength(1);
+    const input = built.inputs[0];
+    expect(input).toBeDefined();
+    if (!input) return;
+
+    const offsets = input.keyOffsets;
+    expect(offsets.length).toBeGreaterThan(1);
+    // First offset is the absolute global index of the smallest ring member (>= 100,
+    // the real output's global index, since the real output is the smallest here).
+    expect(offsets[0]).toBe(100);
+    // Subsequent offsets are deltas (here 200-100, 300-200) — strictly smaller than
+    // the absolute first when the ring members are densely spaced.
+    expect(offsets.slice(1)).toEqual([100, 100]);
+    // Recovering absolutes by cumulative sum yields a strictly ascending sequence.
+    const absolutes = offsets.reduce<number[]>((acc, off, idx) => {
+      acc.push(idx === 0 ? off : (acc[idx - 1] as number) + off);
+      return acc;
+    }, []);
+    expect(absolutes).toEqual([100, 200, 300]);
+    for (let i = 1; i < absolutes.length; i++) {
+      expect(absolutes[i] as number).toBeGreaterThan(absolutes[i - 1] as number);
+    }
+    // The struct fed to the serializer carries exactly these relative offsets.
+    expect(structOf(built).vin[0]?.key_offsets).toEqual(offsets);
+  });
+
   it("validates inputs and throws on bad arguments", () => {
     const good = baseInput();
     expect(() => buildTransaction({ ...good, destinations: [] })).toThrow(/destination/i);
