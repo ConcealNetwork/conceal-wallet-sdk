@@ -98,6 +98,20 @@ function mockDaemon(
   return {
     nodeUrl: "https://mock/",
     getHeight: () => Promise.resolve(height),
+    getInfo: () =>
+      Promise.resolve({
+        height,
+        difficulty: 0,
+        txPoolSize: 0,
+        incomingConnections: 0,
+        outgoingConnections: 0,
+        whitePeerlistSize: 0,
+        greyPeerlistSize: 0,
+        altBlocksCount: 0,
+        startTime: 0,
+        version: "",
+        status: "OK",
+      }),
     getNodeFeeAddress: () => Promise.resolve(""),
     sendRawTransaction: () => Promise.resolve({ status: "OK" }),
     getRandomOuts: () => Promise.resolve([]),
