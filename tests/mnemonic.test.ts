@@ -30,18 +30,14 @@ describe("mnemonic", () => {
     }
   });
 
-  it(
-    "decodes Portuguese seeds incl. prefix-colliding words (lib-js disambiguation fix)",
-    () => {
-      const seededHex = (n: number) => createHash("sha256").update(`ccx-${n}`).digest("hex");
-      for (let n = 1; n <= 400; n++) {
-        const seed = seededHex(n);
-        const phrase = ccxMnemonic.mn_encode(seed, "portuguese") as string;
-        expect(mnemonicToSeed(phrase, "portuguese")).toBe(seed);
-      }
-    },
-    30_000,
-  );
+  it("decodes Portuguese seeds incl. prefix-colliding words (lib-js disambiguation fix)", () => {
+    const seededHex = (n: number) => createHash("sha256").update(`ccx-${n}`).digest("hex");
+    for (let n = 1; n <= 400; n++) {
+      const seed = seededHex(n);
+      const phrase = ccxMnemonic.mn_encode(seed, "portuguese") as string;
+      expect(mnemonicToSeed(phrase, "portuguese")).toBe(seed);
+    }
+  }, 30_000);
 
   it("detects the wordlist language (checksum makes cross-language decode fail)", () => {
     expect(detectLanguage(generateMnemonic("spanish"))).toBe("spanish");
