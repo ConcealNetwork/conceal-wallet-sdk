@@ -6,9 +6,6 @@
 import { ccxCrypto } from "./crypto";
 import type { DecodedAddress, Hex } from "./types";
 
-/** Encoded CCX addresses are a fixed 98 chars (`ccx7…`). */
-const ADDRESS_LENGTH = 98;
-
 /** Raw shape `crypto.decode_address` returns: public-key hex + optional integrated payment id. */
 interface RawDecodedAddress {
   spend: Hex;

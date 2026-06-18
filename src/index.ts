@@ -5,6 +5,13 @@
 
 export { type Account, createAccount, restoreFromMnemonic, restoreFromSpendKey } from "./account";
 export {
+  createMemoryStorage,
+  createNamespacedStorage,
+  createWebStorage,
+  type StorageAdapter,
+  type WebStorageLike,
+} from "./adapters";
+export {
   buildPaymentUri,
   decodeAddress,
   isValidAddress,
@@ -28,6 +35,16 @@ export {
   mnemonicToSeed,
   SEED_LANGUAGES,
 } from "./mnemonic";
+export {
+  createWalletSync,
+  DEFAULT_BATCH_SIZE,
+  DEFAULT_STORAGE_KEY,
+  type SyncOptions,
+  type WalletSync,
+} from "./sync";
+export type { OwnedOutput, RawTransaction } from "./transactions";
+/** Transaction scanning + (testnet-pending) spend building. */
+export * as transactions from "./transactions";
 export type {
   DecodedAddress,
   Hex,
@@ -37,3 +54,16 @@ export type {
   ViewOnlyKeys,
   WalletKeys,
 } from "./types";
+export {
+  applyScannedTransaction,
+  type Balance,
+  createWalletState,
+  deserializeWalletState,
+  getBalance,
+  getTransactions,
+  getUnspentOutputs,
+  serializeWalletState,
+  WALLET_STATE_VERSION,
+  type WalletState,
+  type WalletTransaction,
+} from "./wallet";
