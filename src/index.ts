@@ -29,6 +29,14 @@ export {
   type DaemonClientOptions,
   normalizeNodeUrl,
 } from "./daemon";
+export {
+  analyzeKeysShape,
+  type KeysShape,
+  normalizeUserKeys,
+  type UserKeys,
+  userKeysFromEncryptedKeysString,
+  userKeysFromPriv,
+} from "./keys";
 /** Encrypted messages + the smart-message protocol. */
 export * as messages from "./messages";
 export {
