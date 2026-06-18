@@ -3,27 +3,28 @@
  * lib-js's loosely-typed `decode_address` and builds/parses the bare-address
  * payment links the Conceal wallets exchange (QR codes, `conceal:` links).
  */
-import { ccxAddress, ccxCrypto } from "./crypto";
+import { ccxAddress } from "./crypto";
 import type { DecodedAddress, Hex } from "./types";
 
-/** Raw shape `crypto.decode_address` returns: public-key hex + optional integrated payment id. */
+/** Raw shape `address.decode_address` returns: public-key hex + integrated payment id (or null). */
 interface RawDecodedAddress {
   spend: Hex;
   view: Hex;
-  /** Present only for integrated addresses. */
-  intPaymentId?: Hex;
+  /** Set (non-null) only for integrated addresses. */
+  intPaymentId?: Hex | null;
 }
 
 /**
  * Decode and validate a CCX address, normalizing to public spend/view keys
- * plus an optional integrated payment id. `decode_address` validates the
- * checksum/prefix and throws **bare strings** (not `Error`s) on bad input, so
- * we catch everything and rethrow a clear, typed `Error`.
+ * plus an optional integrated payment id. Uses lib-js's JS-tier
+ * `address.decode_address`, which validates prefix/length/checksum **and**
+ * surfaces the integrated payment id (the WASM `crypto.decode_address` always
+ * returns null). Any decode error is caught and rethrown as a clear `Error`.
  */
 export function decodeAddress(address: string): DecodedAddress {
   let raw: RawDecodedAddress;
   try {
-    raw = ccxCrypto.decode_address(address) as RawDecodedAddress;
+    raw = ccxAddress.decode_address(address) as RawDecodedAddress;
   } catch {
     throw new Error("Invalid CCX address.");
   }
