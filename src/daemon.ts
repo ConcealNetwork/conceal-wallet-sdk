@@ -14,9 +14,14 @@ import type { Hex } from "./types";
 export interface DaemonClientOptions {
   /**
    * Daemon proxy base URL. `https://` is always accepted; `http://` is accepted
-   * for loopback/private hosts (localhost, 127.x, 10.x, 192.168.x, 172.16–31.x,
-   * 100.64–127.x) or for any host when {@link allowInsecure} is set. A trailing
-   * slash is enforced.
+   * for loopback/private hosts (localhost, 127.0.0.0/8, 10/8, 192.168/16,
+   * 172.16/12, 100.64/10, `[::1]`) or for any host when {@link allowInsecure} is
+   * set. A trailing slash is enforced.
+   *
+   * Security: if your application lets end users supply an arbitrary `nodeUrl`,
+   * validate it yourself — the loopback/private http auto-allow means a
+   * user-supplied `http://127.0.0.1:6379`-style URL could be used to probe
+   * internal services (SSRF), and any allowed http sends traffic in plaintext.
    */
   nodeUrl: string;
   /** `fetch` implementation to use. Defaults to `globalThis.fetch`. */
@@ -84,15 +89,30 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 
 const JSON_HEADERS: Readonly<Record<string, string>> = { "Content-Type": "application/json" };
 
-/** True for loopback / RFC1918 private / CGNAT (Tailscale) hosts, where plain http is fine. */
+/**
+ * True for loopback / RFC1918-private / CGNAT (Tailscale) hosts, where plain
+ * http is acceptable. IP ranges are matched ONLY against a syntactically valid
+ * IPv4 dotted-quad (or bracketed IPv6 loopback) — never a prefix of an
+ * arbitrary hostname, so a public DNS name like `10.evil.com` or
+ * `192.168.x.attacker.com` is NOT treated as private.
+ */
 function isLocalOrPrivateHost(host: string): boolean {
-  const h = host.toLowerCase();
-  if (h === "localhost" || h === "127.0.0.1" || h === "::1" || h.endsWith(".localhost")) {
-    return true;
-  }
-  if (/^10\./.test(h) || /^192\.168\./.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true; // 172.16–31
-  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true; // 100.64.0.0/10
+  let h = host.toLowerCase();
+  // Strip a single FQDN trailing dot (`localhost.`, `127.0.0.1.`).
+  if (h.endsWith(".")) h = h.slice(0, -1);
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  // IPv6 loopback — `URL.hostname` keeps the brackets (`[::1]`).
+  if (h === "::1" || h === "[::1]") return true;
+  // IPv4: classify only a true 4-octet address (each octet 0–255).
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m || m.slice(1).some((octet) => Number(octet) > 255)) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 127) return true; // 127.0.0.0/8 loopback
+  if (a === 10) return true; // 10.0.0.0/8
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
   return false;
 }
 

@@ -39,10 +39,30 @@ describe("normalizeNodeUrl", () => {
 
   it("allows http for loopback / private / CGNAT hosts without opt-in", () => {
     expect(normalizeNodeUrl("http://127.0.0.1:16000")).toBe("http://127.0.0.1:16000/");
+    expect(normalizeNodeUrl("http://127.0.0.2:16000")).toBe("http://127.0.0.2:16000/"); // 127/8
     expect(normalizeNodeUrl("http://localhost:16800")).toBe("http://localhost:16800/");
+    expect(normalizeNodeUrl("http://localhost.:16800")).toBe("http://localhost.:16800/"); // trailing dot
     expect(normalizeNodeUrl("http://192.168.1.50:16000")).toBe("http://192.168.1.50:16000/");
     expect(normalizeNodeUrl("http://10.0.0.5:16000")).toBe("http://10.0.0.5:16000/");
     expect(normalizeNodeUrl("http://100.100.90.103:16800")).toBe("http://100.100.90.103:16800/");
+    expect(normalizeNodeUrl("http://[::1]:16000")).toBe("http://[::1]:16000/"); // IPv6 loopback
+  });
+
+  it("does NOT treat a public DNS name with a private-looking prefix as private", () => {
+    // Regression: unanchored prefix regexes used to allow these over plaintext http.
+    for (const url of [
+      "http://10.evil.com",
+      "http://10.0.0.5.evil.com",
+      "http://192.168.1.attacker.com",
+      "http://172.16.pwned.net",
+      "http://100.64.foo.example",
+      "http://999.0.0.1", // not a valid IPv4 (octet > 255) → not private
+    ]) {
+      // Rejected outright (not silently downgraded to plaintext http).
+      expect(() => normalizeNodeUrl(url)).toThrow();
+      // And explicitly NOT classified as a local/private host.
+      expect(() => normalizeNodeUrl(url, { allowInsecure: false })).toThrow();
+    }
   });
 
   it("throws on a non-http(s) scheme", () => {
