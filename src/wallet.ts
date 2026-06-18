@@ -12,6 +12,7 @@
  * output is one whose key image has appeared in some transaction's inputs.
  */
 import type { Account } from "./account";
+import type { OwnedDeposit } from "./deposits";
 import type { OwnedOutput } from "./transactions";
 
 /** Direction of value flow for a {@link WalletTransaction}, from the wallet's view. */
@@ -43,10 +44,22 @@ export interface WalletState {
   spentKeyImages: string[];
   /** Transaction history (storage order; {@link getTransactions} sorts it). */
   transactions: WalletTransaction[];
+  /**
+   * Every type-`03` deposit the wallet owns (locked + withdrawn alike). Deposit
+   * principal is NOT part of {@link getBalance} spendable — it lives only here until
+   * withdrawn (mirrors the legacy `Wallet.deposits` collection).
+   */
+  deposits: OwnedDeposit[];
+  /** Global output indexes of deposits that have been withdrawn (spent). */
+  spentDepositIndexes: number[];
 }
 
-/** Current on-disk schema version for serialized {@link WalletState}. */
-export const WALLET_STATE_VERSION = 1;
+/**
+ * Current on-disk schema version for serialized {@link WalletState}. Bumped to `2`
+ * when deposits/banking state (`deposits`, `spentDepositIndexes`) was added; a v1 blob
+ * has no deposit fields and is upgraded on read by defaulting them to `[]`.
+ */
+export const WALLET_STATE_VERSION = 2;
 
 /** Create a fresh, empty {@link WalletState} for `account` (nothing scanned yet). */
 export function createWalletState(account: Account): WalletState {
@@ -59,6 +72,8 @@ export function createWalletState(account: Account): WalletState {
     outputs: [],
     spentKeyImages: [],
     transactions: [],
+    deposits: [],
+    spentDepositIndexes: [],
   };
 }
 
@@ -171,6 +186,78 @@ export function getUnspentOutputs(state: WalletState): OwnedOutput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Deposits / banking
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge scanned deposits into the wallet state and mark any withdrawn deposits spent,
+ * returning a NEW state (inputs are never mutated):
+ *  - add newly-owned deposits, de-duped by global output index;
+ *  - record `withdrawnGlobalIndexes` (from {@link ../deposits.findWithdrawnDepositIndexes})
+ *    as spent in `spentDepositIndexes`.
+ *
+ * Deposit principal stays OUT of {@link getBalance} spendable — it lives only in
+ * `deposits` until a withdraw redeems it (the redeem output then scans in as an
+ * ordinary {@link OwnedOutput}). Mirrors the legacy `Wallet.deposits` bookkeeping.
+ */
+export function applyScannedDeposits(
+  state: WalletState,
+  ownedDeposits: readonly OwnedDeposit[],
+  withdrawnGlobalIndexes: readonly number[] = [],
+): WalletState {
+  const existingIndexes = new Set(state.deposits.map((d) => d.globalIndex));
+  const addedDeposits: OwnedDeposit[] = [];
+  for (const deposit of ownedDeposits) {
+    if (!existingIndexes.has(deposit.globalIndex)) {
+      existingIndexes.add(deposit.globalIndex);
+      addedDeposits.push(deposit);
+    }
+  }
+  const nextDeposits =
+    addedDeposits.length > 0 ? [...state.deposits, ...addedDeposits] : state.deposits;
+
+  const alreadySpent = new Set(state.spentDepositIndexes);
+  const ownedGlobalIndexes = new Set(nextDeposits.map((d) => d.globalIndex));
+  const newlySpent: number[] = [];
+  for (const globalIndex of withdrawnGlobalIndexes) {
+    if (ownedGlobalIndexes.has(globalIndex) && !alreadySpent.has(globalIndex)) {
+      alreadySpent.add(globalIndex);
+      newlySpent.push(globalIndex);
+    }
+  }
+  const nextSpentDepositIndexes =
+    newlySpent.length > 0
+      ? [...state.spentDepositIndexes, ...newlySpent]
+      : state.spentDepositIndexes;
+
+  if (nextDeposits === state.deposits && nextSpentDepositIndexes === state.spentDepositIndexes) {
+    return state;
+  }
+  return { ...state, deposits: nextDeposits, spentDepositIndexes: nextSpentDepositIndexes };
+}
+
+/**
+ * Deposits still locked at `height` — `blockHeight + term > height` (strict, matching
+ * legacy `Wallet.lockedDeposits`), excluding any already withdrawn.
+ */
+export function getLockedDeposits(state: WalletState, height: number): OwnedDeposit[] {
+  const spent = new Set(state.spentDepositIndexes);
+  return state.deposits.filter((d) => !spent.has(d.globalIndex) && d.blockHeight + d.term > height);
+}
+
+/**
+ * Deposits unlocked and not yet withdrawn at `height` — `blockHeight + term <= height`
+ * and not in `spentDepositIndexes` (matching legacy `Wallet.unlockedDeposits`). These
+ * are the deposits a withdraw can redeem.
+ */
+export function getUnlockedDeposits(state: WalletState, height: number): OwnedDeposit[] {
+  const spent = new Set(state.spentDepositIndexes);
+  return state.deposits.filter(
+    (d) => !spent.has(d.globalIndex) && d.blockHeight + d.term <= height,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Serialization
 // ---------------------------------------------------------------------------
 
@@ -190,6 +277,11 @@ export function serializeWalletState(state: WalletState): string {
  * Parse + validate a serialized {@link WalletState}. Throws a friendly error on
  * malformed JSON, an unknown version, or a structurally-invalid payload — the SDK
  * never trusts persisted bytes blindly.
+ *
+ * Backward-compatible across schema versions: a v1 blob (no deposits/banking fields)
+ * is upgraded on read by defaulting `deposits` / `spentDepositIndexes` to `[]`. Any
+ * version above {@link WALLET_STATE_VERSION} is rejected (the SDK can't understand a
+ * newer schema).
  */
 export function deserializeWalletState(json: string): WalletState {
   let parsed: unknown;
@@ -201,9 +293,12 @@ export function deserializeWalletState(json: string): WalletState {
   if (!isRecord(parsed)) {
     throw new Error("Corrupt wallet state: expected a JSON object.");
   }
-  if (parsed.version !== WALLET_STATE_VERSION) {
+  if (typeof parsed.version !== "number" || !Number.isInteger(parsed.version)) {
+    throw new Error("Corrupt wallet state: version is missing or not an integer.");
+  }
+  if (parsed.version < 1 || parsed.version > WALLET_STATE_VERSION) {
     throw new Error(
-      `Unsupported wallet state version: ${String(parsed.version)} (expected ${WALLET_STATE_VERSION}).`,
+      `Unsupported wallet state version: ${String(parsed.version)} (expected 1..${WALLET_STATE_VERSION}).`,
     );
   }
   return validateWalletState(parsed.state);
@@ -229,6 +324,15 @@ function validateWalletState(value: unknown): WalletState {
   if (!Array.isArray(value.transactions)) {
     throw new Error("Corrupt wallet state: transactions is missing or not an array.");
   }
+  // Deposits/banking fields were added in schema v2; a v1 blob omits them entirely, so
+  // treat a missing field as the empty default (back-compat upgrade-on-read). A PRESENT
+  // field must still be a valid array.
+  if (value.deposits !== undefined && !Array.isArray(value.deposits)) {
+    throw new Error("Corrupt wallet state: deposits is present but not an array.");
+  }
+  if (value.spentDepositIndexes !== undefined && !Array.isArray(value.spentDepositIndexes)) {
+    throw new Error("Corrupt wallet state: spentDepositIndexes is present but not an array.");
+  }
   const outputs = value.outputs.map(validateOwnedOutput);
   const spentKeyImages = value.spentKeyImages.map((keyImage, index) => {
     if (typeof keyImage !== "string") {
@@ -237,12 +341,21 @@ function validateWalletState(value: unknown): WalletState {
     return keyImage;
   });
   const transactions = value.transactions.map(validateTransaction);
+  const deposits = (value.deposits ?? []).map(validateOwnedDeposit);
+  const spentDepositIndexes = (value.spentDepositIndexes ?? []).map((index, i) => {
+    if (typeof index !== "number" || !Number.isInteger(index)) {
+      throw new Error(`Corrupt wallet state: spentDepositIndexes[${i}] is not an integer.`);
+    }
+    return index;
+  });
   return {
     address: value.address,
     scannedHeight: value.scannedHeight,
     outputs,
     spentKeyImages,
     transactions,
+    deposits,
+    spentDepositIndexes,
   };
 }
 
@@ -263,6 +376,55 @@ function validateOwnedOutput(value: unknown, index: number): OwnedOutput {
     throw new Error(`Corrupt wallet state: outputs[${index}] has invalid fields.`);
   }
   return { amount, globalIndex, outputIndex, txPublicKey, publicKey, keyImage };
+}
+
+/** Validate one persisted owned deposit. */
+function validateOwnedDeposit(value: unknown, index: number): OwnedDeposit {
+  if (!isRecord(value)) {
+    throw new Error(`Corrupt wallet state: deposits[${index}] is not an object.`);
+  }
+  const {
+    amount,
+    globalIndex,
+    outputIndex,
+    txPublicKey,
+    publicKey,
+    keys,
+    term,
+    blockHeight,
+    txHash,
+    interest,
+    unlockHeight,
+  } = value;
+  if (
+    typeof amount !== "number" ||
+    typeof globalIndex !== "number" ||
+    typeof outputIndex !== "number" ||
+    typeof txPublicKey !== "string" ||
+    typeof publicKey !== "string" ||
+    !Array.isArray(keys) ||
+    keys.some((k) => typeof k !== "string") ||
+    typeof term !== "number" ||
+    typeof blockHeight !== "number" ||
+    typeof txHash !== "string" ||
+    typeof interest !== "number" ||
+    typeof unlockHeight !== "number"
+  ) {
+    throw new Error(`Corrupt wallet state: deposits[${index}] has invalid fields.`);
+  }
+  return {
+    amount,
+    globalIndex,
+    outputIndex,
+    txPublicKey,
+    publicKey,
+    keys: keys as string[],
+    term,
+    blockHeight,
+    txHash,
+    interest,
+    unlockHeight,
+  };
 }
 
 /** Validate one persisted transaction-history entry. */

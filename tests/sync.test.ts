@@ -3,14 +3,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Account } from "../src/account";
 import { createMemoryStorage } from "../src/adapters";
 import type { DaemonClient, DaemonRawTransaction } from "../src/daemon";
+import { calculateDepositInterest } from "../src/deposits";
 import {
   createWalletSync,
   DEFAULT_STORAGE_KEY,
+  extractDepositInputs,
   extractInputKeyImages,
   toScanTransaction,
 } from "../src/sync";
 import { scanTransactionOutputs } from "../src/transactions";
-import { deserializeWalletState, getBalance, getTransactions } from "../src/wallet";
+import {
+  deserializeWalletState,
+  getBalance,
+  getTransactions,
+  getUnlockedDeposits,
+} from "../src/wallet";
 
 // --- helpers --------------------------------------------------------------
 
@@ -150,6 +157,27 @@ describe("extractInputKeyImages", () => {
   it("returns [] for inputs without key images", () => {
     expect(extractInputKeyImages({ vin: [] })).toEqual([]);
     expect(extractInputKeyImages(null)).toEqual([]);
+  });
+});
+
+describe("extractDepositInputs", () => {
+  it("reads type-03 deposit inputs from direct and nested vin shapes", () => {
+    const tx = {
+      vin: [
+        { type: "02", k_image: "aa".repeat(32) }, // ring input — ignored
+        { type: "input_to_deposit_key", outputIndex: 42, term: 21900 },
+        { type: "03", value: { outputIndex: 9, term: 5040 } },
+      ],
+    };
+    expect(extractDepositInputs(tx)).toEqual([
+      { type: "input_to_deposit_key", outputIndex: 42, term: 21900 },
+      { type: "input_to_deposit_key", outputIndex: 9, term: 5040 },
+    ]);
+  });
+
+  it("returns [] when there are no deposit inputs", () => {
+    expect(extractDepositInputs({ vin: [{ type: "02", k_image: "aa".repeat(32) }] })).toEqual([]);
+    expect(extractDepositInputs(null)).toEqual([]);
   });
 });
 
@@ -407,5 +435,147 @@ describe("createWalletSync.start / stop", () => {
       account: accountOf(recipient),
     });
     expect(() => sync.start(0)).toThrow(/positive interval/i);
+  });
+});
+
+// --- deposits flow end-to-end ----------------------------------------------
+
+/**
+ * A daemon tx whose single type-03 output is a deposit genuinely owned by `recipient`
+ * (stealth-constructed so the SDK scans it for real). Carries no spendable type-02
+ * output and no key images — it must still flow into state via the deposit path.
+ */
+function ownedDepositDaemonTx(
+  recipient: Created,
+  tx: { sec: string; pub: string },
+  amount: number,
+  term: number,
+  opts: { height: number; globalIndex: number; hash: string },
+): DaemonRawTransaction {
+  const derivation = ccxCrypto.generate_key_derivation(recipient.view.pub, tx.sec);
+  const depositKey = ccxCrypto.derive_public_key(derivation, 0, recipient.spend.pub);
+  return {
+    transaction: {
+      extra: `01${tx.pub}`,
+      vout: [
+        {
+          amount,
+          target: { type: "03", data: { keys: [depositKey], required_signatures: 1, term } },
+        },
+      ],
+      vin: [],
+    },
+    timestamp: 1700000000 + opts.height,
+    outputIndexes: [opts.globalIndex],
+    height: opts.height,
+    blockHash: "dd".repeat(32),
+    hash: opts.hash,
+    fee: 1000,
+  };
+}
+
+/** A daemon tx that withdraws a deposit: single type-03 input by its global index. */
+function withdrawDaemonTx(
+  depositGlobalIndex: number,
+  term: number,
+  opts: { height: number; hash: string },
+): DaemonRawTransaction {
+  const tx = txKeypair("e1");
+  return {
+    transaction: {
+      extra: `01${tx.pub}`,
+      // The redeem output goes to the owner, but for this test we only need the type-03
+      // input to be detected as a withdrawal of our deposit (no owned vout required).
+      vout: [{ amount: 1, target: { type: "02", data: { key: "00".repeat(32) } } }],
+      vin: [{ type: "input_to_deposit_key", outputIndex: depositGlobalIndex, term }],
+    },
+    timestamp: 1700000000 + opts.height,
+    outputIndexes: [],
+    height: opts.height,
+    blockHash: "ee".repeat(32),
+    hash: opts.hash,
+    fee: 10,
+  };
+}
+
+describe("createWalletSync.syncOnce — deposits", () => {
+  const recipient = created("aa");
+
+  it("a deposit tx then a withdraw tx flow into state.deposits / spentDepositIndexes", async () => {
+    const amount = 1e10; // 10000 CCX
+    const term = 21900; // 1 month
+    const depositHeight = 413401; // > depositHeightV3
+    const depositGlobalIndex = 6060;
+
+    const depositTx = ownedDepositDaemonTx(recipient, txKeypair("d1"), amount, term, {
+      height: depositHeight,
+      globalIndex: depositGlobalIndex,
+      hash: "a0".repeat(32),
+    });
+    const withdrawTx = withdrawDaemonTx(depositGlobalIndex, term, {
+      height: depositHeight + term + 1,
+      hash: "a1".repeat(32),
+    });
+
+    // Phase 1: sync up to the deposit only — it must land in state.deposits.
+    const daemon1 = mockDaemon(depositHeight, new Map([[depositHeight, [depositTx]]]));
+    const sync = createWalletSync({
+      daemon: daemon1,
+      account: accountOf(recipient),
+      batchSize: 1_000_000,
+    });
+    let state = await sync.syncOnce();
+    expect(state.deposits).toHaveLength(1);
+    expect(state.deposits[0]?.amount).toBe(amount);
+    expect(state.deposits[0]?.term).toBe(term);
+    expect(state.deposits[0]?.globalIndex).toBe(depositGlobalIndex);
+    expect(state.deposits[0]?.interest).toBe(
+      calculateDepositInterest({ amount, term, lockHeight: depositHeight }),
+    );
+    expect(state.spentDepositIndexes).toEqual([]);
+    // Deposit principal is NOT spendable balance.
+    expect(getBalance(state).spendable).toBe(0);
+    // Unlocked at/after blockHeight + term.
+    expect(getUnlockedDeposits(state, depositHeight + term)).toHaveLength(1);
+
+    // Phase 2: the daemon now also serves the withdraw tx; the next sync marks it spent.
+    daemon1.getHeight = () => Promise.resolve(withdrawTx.height as number);
+    (daemon1 as { getWalletSyncData: DaemonClient["getWalletSyncData"] }).getWalletSyncData = (
+      start: number,
+      end: number,
+    ) => {
+      const out: DaemonRawTransaction[] = [];
+      if (
+        withdrawTx.height !== undefined &&
+        withdrawTx.height >= start &&
+        withdrawTx.height <= end
+      ) {
+        out.push(withdrawTx);
+      }
+      return Promise.resolve(out);
+    };
+    state = await sync.syncOnce();
+    expect(state.spentDepositIndexes).toEqual([depositGlobalIndex]);
+    expect(getUnlockedDeposits(state, withdrawTx.height as number)).toHaveLength(0);
+  });
+
+  it("a deposit-only tx (no type-02 output, no key images) is still applied", async () => {
+    const amount = 1e10;
+    const term = 21900;
+    const height = 413402;
+    const depositTx = ownedDepositDaemonTx(recipient, txKeypair("d2"), amount, term, {
+      height,
+      globalIndex: 7070,
+      hash: "b0".repeat(32),
+    });
+    const daemon = mockDaemon(height, new Map([[height, [depositTx]]]));
+    const sync = createWalletSync({
+      daemon,
+      account: accountOf(recipient),
+      batchSize: 1_000_000,
+    });
+    const state = await sync.syncOnce();
+    expect(state.deposits).toHaveLength(1);
+    expect(state.deposits[0]?.globalIndex).toBe(7070);
   });
 });

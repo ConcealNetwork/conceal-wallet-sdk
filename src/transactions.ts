@@ -20,12 +20,25 @@
 import { transactions as ccxTransactions } from "conceal-lib-js";
 import {
   ccxCrypto,
+  checkSignature,
   cnutils,
   derivePublicKey,
   deriveSecretKey,
   generateKeyDerivation,
   generateKeyImage,
+  generateSignature,
 } from "./crypto";
+import {
+  DEPOSIT_MAX_TERM_BLOCK,
+  DEPOSIT_MIN_AMOUNT_ATOMIC,
+  DEPOSIT_MIN_TERM_BLOCK,
+  DEPOSIT_SMALL_WITHDRAW_FEE,
+  DEPOSIT_TX_VERSION,
+  deriveDepositOneTimeKey,
+  type OwnedDeposit,
+  recomputeDepositInterest,
+  scanDepositOutput,
+} from "./deposits";
 import { decryptMessage, deriveMessageKey, encryptMessage } from "./messages";
 import type { Hex, WalletKeys } from "./types";
 
@@ -190,14 +203,45 @@ export function extractTransactionPublicKey(extraHex: Hex): Hex | null {
  * outputs, or no owned outputs. Throws only on structurally invalid keys.
  */
 export function scanTransactionOutputs(tx: RawTransaction, keys: ScanKeys): OwnedOutput[] {
+  return scanTransactionOutputsAndDeposits(tx, keys).outputs;
+}
+
+/** Owned ordinary (spendable) outputs and owned deposit outputs detected in one scan. */
+export interface ScannedOutputs {
+  /**
+   * Owned SPENDABLE outputs only — type-`02` `txout_to_key`. Type-`03` deposit
+   * outputs are NOT here (they go to {@link ScannedOutputs.deposits}), so locked
+   * principal never enters the spendable balance / input selection.
+   */
+  outputs: OwnedOutput[];
+  /** Owned type-`03` deposit outputs, with recovered term/interest/unlockHeight. */
+  deposits: OwnedDeposit[];
+}
+
+/**
+ * Detect every owned output of `tx` in a single ECDH scan, splitting them by kind: an
+ * ordinary owned output yields an {@link OwnedOutput} (spendable, with a key image),
+ * while an owned type-`03` output carrying a `term` yields an {@link OwnedDeposit}
+ * (term, keys, in-vout index, interest, unlock height) — and is recorded ONLY in
+ * `deposits`, never in `outputs`. This mirrors the legacy `TransactionsExplorer.parse`,
+ * which keeps deposits in a separate collection and excludes type-`03` from the
+ * spendable balance / input selection.
+ *
+ * {@link scanTransactionOutputs} is the back-compatible projection that returns only the
+ * spendable `outputs`; use this when the caller also needs deposits.
+ */
+export function scanTransactionOutputsAndDeposits(
+  tx: RawTransaction,
+  keys: ScanKeys,
+): ScannedOutputs {
   validateScanKeys(keys);
   if (!Array.isArray(tx.vout) || tx.vout.length === 0) {
-    return [];
+    return { outputs: [], deposits: [] };
   }
 
   const txPublicKey = extractTransactionPublicKey(tx.extra);
   if (txPublicKey === null) {
-    return [];
+    return { outputs: [], deposits: [] };
   }
 
   // Fast path: one WASM scan rules out the (overwhelmingly common) not-ours tx.
@@ -207,11 +251,14 @@ export function scanTransactionOutputs(tx: RawTransaction, keys: ScanKeys): Owne
     keys: out.target.data.keys,
   }));
   if (!ccxTransactions.scanReceiveOutputs(txPublicKey, keys.view.sec, keys.spend.pub, vouts)) {
-    return [];
+    return { outputs: [], deposits: [] };
   }
 
   const derivation = generateKeyDerivation(txPublicKey, keys.view.sec);
   const owned: OwnedOutput[] = [];
+  const deposits: OwnedDeposit[] = [];
+  const txHash = typeof tx.hash === "string" ? tx.hash : "";
+  const blockHeight = typeof tx.height === "number" ? tx.height : 0;
 
   for (let outputIndex = 0; outputIndex < tx.vout.length; outputIndex++) {
     const output = tx.vout[outputIndex];
@@ -222,13 +269,40 @@ export function scanTransactionOutputs(tx: RawTransaction, keys: ScanKeys): Owne
     const { owned: isMine, publicKey } = matchOutputTarget(output, derivedKey);
     if (!isMine) continue;
 
-    const outputSecret = deriveSecretKey(derivation, outputIndex, keys.spend.sec);
-    const keyImage = generateKeyImage(publicKey, outputSecret);
-
     const globalIndex =
       Array.isArray(tx.outputIndexes) && typeof tx.outputIndexes[outputIndex] === "number"
         ? (tx.outputIndexes[outputIndex] as number)
         : outputIndex;
+
+    // A type-`03` output carrying a `term` is a DEPOSIT: it is recorded in `deposits`
+    // ONLY — never in `owned` — so locked principal stays out of the spendable balance
+    // and can never be selected as a normal `input_to_key` spend. This mirrors the
+    // legacy `availableAmount`/`formatWalletOutsForTx` which skip `type === "03"`. The
+    // derived `publicKey` is the one-time deposit key (`keys[0]`); a deposit is never
+    // key-imaged here (it is spent via the dedicated withdraw single-signature path).
+    if (
+      output.target.type === "03" &&
+      Array.isArray(output.target.data.keys) &&
+      typeof output.target.data.term === "number"
+    ) {
+      deposits.push(
+        scanDepositOutput({
+          amount: output.amount,
+          term: output.target.data.term,
+          keys: output.target.data.keys,
+          publicKey,
+          txPublicKey,
+          outputIndex,
+          globalIndex,
+          blockHeight,
+          txHash,
+        }),
+      );
+      continue;
+    }
+
+    const outputSecret = deriveSecretKey(derivation, outputIndex, keys.spend.sec);
+    const keyImage = generateKeyImage(publicKey, outputSecret);
 
     owned.push({
       amount: output.amount,
@@ -240,7 +314,7 @@ export function scanTransactionOutputs(tx: RawTransaction, keys: ScanKeys): Owne
     });
   }
 
-  return owned;
+  return { outputs: owned, deposits };
 }
 
 /** Reject malformed scan/build keys early with a clear message (fail-fast at the boundary). */
@@ -704,14 +778,455 @@ export function buildTransaction(input: BuildTransactionInput): BuiltTransaction
   };
 }
 
-/** lib-js transaction structure consumed by the serializer (`transactions.*`). */
+/**
+ * A type-`02` ring input — ordinary spend (`input_to_key`).
+ */
+type TxStructRingInput = {
+  type: "input_to_key";
+  amount: number;
+  key_offsets: number[];
+  k_image: Hex;
+};
+
+/**
+ * A type-`03` deposit-withdraw input (`input_to_deposit_key`). The serializer
+ * forces `required_signatures = 1` and reads `amount` (principal), `outputIndex`
+ * (the deposit's global output index) and `term`; `signatures: 1` mirrors the
+ * legacy struct but is not consulted by the serializer. No ring / no key image.
+ */
+type TxStructDepositInput = {
+  type: "input_to_deposit_key";
+  amount: number;
+  term: number;
+  outputIndex: number;
+  signatures: 1;
+};
+
+/**
+ * A type-`02` output (`txout_to_key`) — ordinary destination / change.
+ */
+type TxStructKeyOutput = {
+  amount: number;
+  target: { type: "txout_to_key"; data: { key: Hex } };
+};
+
+/**
+ * A type-`03` deposit output (`txout_to_deposit_key`). Carries the single
+ * one-time deposit key, `required_signatures: 1`, and the lock `term` (encoded
+ * with `encode_varint_term`).
+ */
+type TxStructDepositOutput = {
+  amount: number;
+  target: {
+    type: "txout_to_deposit_key";
+    data: { keys: Hex[]; required_signatures: 1; term: number };
+  };
+};
+
+/**
+ * lib-js transaction structure consumed by the serializer (`transactions.*`).
+ * Version 1 regular spends use {@link TxStructRingInput}/{@link TxStructKeyOutput};
+ * version-2 deposit (lock) and withdraw (unlock) txs additionally use the type-`03`
+ * deposit input/output shapes — matching the legacy `Cn.construct_tx` vin/vout union.
+ */
 interface TxStruct {
   version: number;
   unlock_time: number;
-  vin: Array<{ type: "input_to_key"; amount: number; key_offsets: number[]; k_image: Hex }>;
-  vout: Array<{ amount: number; target: { type: "txout_to_key"; data: { key: Hex } } }>;
+  vin: Array<TxStructRingInput | TxStructDepositInput>;
+  vout: Array<TxStructKeyOutput | TxStructDepositOutput>;
   extra: Hex;
   signatures: Hex[][];
+}
+
+// ---------------------------------------------------------------------------
+// DEPOSITS — type-03 deposit (lock) + withdraw (unlock) builders
+// ---------------------------------------------------------------------------
+
+/** Inputs to {@link buildDepositTransaction}. */
+export interface BuildDepositTransactionInput {
+  /** Spending wallet keys (the deposit + change go to this same wallet). */
+  keys: WalletKeys;
+  /** Deposit principal, atomic units (locked to a single type-`03` output). */
+  amount: number;
+  /** Lock term in blocks (`months * 21900`). */
+  termBlocks: number;
+  /** The sender's OWN decoded keys — recipient of both the deposit and the change. */
+  ownKeys: { spendPublicKey: Hex; viewPublicKey: Hex };
+  /** All spendable (type-`02`) outputs available to the wallet. */
+  unspentOutputs: SpendableOutput[];
+  /** Decoy outputs (one {@link DecoySet} per selected input amount). */
+  decoys: DecoySet[];
+  /** Network fee in atomic units (1000 = `coinFee`). */
+  fee: number;
+  /** Ring size minus one (decoys mixed per real type-`02` input). */
+  mixin: number;
+  /** Dust threshold; outputs at or below this are skipped during selection. */
+  dustThreshold?: number;
+}
+
+/**
+ * Build a broadcast-ready, signed deposit (lock) transaction — version `2`,
+ * `unlock_time = 0`, one type-`03` `txout_to_deposit_key` output to the sender's OWN
+ * address as `vout[0]` (NOT decomposed), optional type-`02` change, and ordinary
+ * type-`02` ring inputs signed with normal ring signatures.
+ *
+ * Faithfully ports the deposit branch of `Cn.construct_tx` (`Cn.ts:2227-2257`):
+ *  - Select non-dust type-`02` inputs to cover `amount + fee`; change = inputs − amount − fee.
+ *  - Deposit output one-time key (own-address change-path derivation, out_index 0):
+ *    `derive_public_key(generate_key_derivation(ownView, r), 0, ownSpend)`.
+ *  - The deposit output is `vout[0]`; the change one-time key is derived at the NEXT
+ *    out_index (1) — change is NOT decomposed alongside the deposit (a single change
+ *    output, matching the legacy deposit path which only decomposes `dsts.slice(1)`,
+ *    and here we hold exactly one change destination).
+ *  - Sign each type-`02` input over the version-2 prefix hash with
+ *    `generate_ring_signature` (unchanged from a regular spend).
+ *  - Serialize via lib-js's mainnet-proven serializer.
+ */
+export function buildDepositTransaction(input: BuildDepositTransactionInput): BuiltTransaction {
+  validateDepositInput(input);
+
+  const { amount, fee, termBlocks } = input;
+  const dustThreshold = input.dustThreshold ?? 0;
+  const targetAmount = amount + fee;
+
+  const { selected, total: inputsAmount } = selectInputs(
+    input.unspentOutputs,
+    targetAmount,
+    dustThreshold,
+  );
+  const changeAmount = inputsAmount - targetAmount;
+
+  // Transaction keypair: r (secret) and R = rG (public, goes in extra on chain).
+  const txSecretKey = ccxCrypto.sc_reduce32(randomScalarHex()) as Hex;
+  const txPublicKey = ccxCrypto.ge_scalarmult_base(txSecretKey) as Hex;
+  const extra = `01${txPublicKey}` as Hex;
+
+  // The deposit + change both go to the sender's own address, so the output derivation
+  // is the change-path derivation D = generate_key_derivation(ownView, r) (Cn.ts:2214).
+  const outDerivation = generateKeyDerivation(input.ownKeys.viewPublicKey, txSecretKey);
+
+  // vout[0]: the type-03 deposit output (out_index 0). NOT decomposed.
+  const depositKey = derivePublicKey(outDerivation, 0, input.ownKeys.spendPublicKey) as Hex;
+  const outputs: BuiltOutput[] = [{ amount, publicKey: depositKey }];
+
+  // vout[1]: change as an ordinary type-02 output at the NEXT out_index (Cn.ts:2241-2255).
+  if (changeAmount > 0) {
+    const changeKey = derivePublicKey(outDerivation, 1, input.ownKeys.spendPublicKey) as Hex;
+    outputs.push({ amount: changeAmount, publicKey: changeKey });
+  }
+
+  // Build inputs: key image + decoy ring per selected (type-02) output.
+  const decoyByAmount = new Map<number, DecoyOutput[]>();
+  for (const set of input.decoys) {
+    decoyByAmount.set(set.amount, set.outs);
+  }
+
+  type PreInput = {
+    amount: number;
+    keyImage: Hex;
+    ephemeralSecret: Hex;
+    keyOffsets: number[];
+    ringPublicKeys: Hex[];
+    realIndex: number;
+  };
+
+  const preInputs: PreInput[] = selected.map((out) => {
+    const { ephemeralSecret, keyImage } = deriveInputKeyImage(out, input.keys);
+    const decoys = decoyByAmount.get(out.amount) ?? [];
+    const { ringPublicKeys, keyOffsets, realIndex } = assembleRing(out, decoys, input.mixin);
+    return { amount: out.amount, keyImage, ephemeralSecret, keyOffsets, ringPublicKeys, realIndex };
+  });
+
+  // Consensus orders inputs by descending key image.
+  preInputs.sort((a, b) => (a.keyImage < b.keyImage ? 1 : a.keyImage > b.keyImage ? -1 : 0));
+
+  // version 2, unlock_time 0; vout[0] is the type-03 deposit output.
+  const struct: TxStruct = {
+    version: DEPOSIT_TX_VERSION,
+    unlock_time: 0,
+    vin: preInputs.map((pre) => ({
+      type: "input_to_key",
+      amount: pre.amount,
+      key_offsets: pre.keyOffsets,
+      k_image: pre.keyImage,
+    })),
+    vout: [
+      {
+        amount,
+        target: {
+          type: "txout_to_deposit_key",
+          data: { keys: [depositKey], required_signatures: 1, term: termBlocks },
+        },
+      },
+      ...outputs.slice(1).map((out) => ({
+        amount: out.amount,
+        target: { type: "txout_to_key" as const, data: { key: out.publicKey } },
+      })),
+    ],
+    extra,
+    signatures: [],
+  };
+
+  const prefixHash = ccxTransactions.getTransactionPrefixHash(struct) as Hex;
+
+  const inputs: BuiltInput[] = preInputs.map((pre) => {
+    const signatures = ccxCrypto.generate_ring_signature(
+      prefixHash,
+      pre.keyImage,
+      pre.ringPublicKeys,
+      pre.ephemeralSecret,
+      pre.realIndex,
+    ) as Hex[];
+    return {
+      amount: pre.amount,
+      keyImage: pre.keyImage,
+      keyOffsets: pre.keyOffsets,
+      ringPublicKeys: pre.ringPublicKeys,
+      realIndex: pre.realIndex,
+      signatures,
+    };
+  });
+
+  const signedStruct: TxStruct = {
+    ...struct,
+    signatures: inputs.map((inp) => inp.signatures),
+  };
+  const { raw, hash } = ccxTransactions.serializeTransactionWithHash(signedStruct);
+
+  return {
+    txPublicKey,
+    txSecretKey,
+    inputs,
+    outputs,
+    fee,
+    inputsAmount,
+    sentAmount: amount,
+    changeAmount,
+    extra,
+    prefixHash,
+    serialized: raw as Hex,
+    hash: hash as Hex,
+  };
+}
+
+/** Inputs to {@link buildWithdrawTransaction}. */
+export interface BuildWithdrawTransactionInput {
+  /** Wallet keys that own the deposit (needed to re-derive the ephemeral signing pair). */
+  keys: WalletKeys;
+  /** The owned deposit being withdrawn (from scan / wallet state). */
+  deposit: OwnedDeposit;
+  /** The sender's OWN decoded keys — the single redeem output goes back to self. */
+  ownKeys: { spendPublicKey: Hex; viewPublicKey: Hex };
+  /**
+   * Withdraw fee in atomic units. Defaults to {@link DEPOSIT_SMALL_WITHDRAW_FEE} (10,
+   * the legacy `config.depositSmallWithdrawFee`) — the only value the legacy wallet
+   * ever uses. Overridable, but a wrong value silently burns the difference, so the
+   * default is the safe choice and callers should rarely set it.
+   */
+  withdrawFee?: number;
+}
+
+/**
+ * Build a broadcast-ready, signed withdraw (unlock) transaction — version `2`,
+ * `unlock_time = 0`, exactly ONE type-`03` `input_to_deposit_key` input (no ring, no
+ * decoys, mixin 0), and ONE type-`02` output to the sender's own address for
+ * `principal + interest − withdrawFee`. Signed with a SINGLE `generate_signature`
+ * (NOT a ring signature) over the prefix hash, verified before attaching.
+ *
+ * Faithfully ports `Cn.construct_tx` withdraw branches (`Cn.ts:2125-2134` vin,
+ * `Cn.ts:2363-2421` single-sig) + `TransactionsExplorer.createWithdrawTx`
+ * (`:1179-1231`):
+ *  - vin[0] = `{ input_to_deposit_key, amount: deposit.amount (PRINCIPAL), term,
+ *    outputIndex: deposit.globalIndex, signatures: 1 }` — inputs are NOT key-imaged
+ *    or sorted for a withdraw.
+ *  - vout[0] = type-`02` to self for `deposit.amount + deposit.interest − withdrawFee`.
+ *  - Re-derive the ephemeral pair from the deposit's SOURCE tx:
+ *    `D = generate_key_derivation(deposit.txPublicKey, view.sec)`,
+ *    `ephPub = derive_public_key(D, deposit.outputIndex, spend.pub)`,
+ *    `ephSec = derive_secret_key(D, deposit.outputIndex, spend.sec)`,
+ *    `sig = generate_signature(prefixHash, ephPub, ephSec)`; verify with
+ *    `check_signature`; attach `signatures = [[sig]]` (exactly one).
+ *
+ * The deposit's stored `interest` is re-derived from `(amount, term, blockHeight)` and
+ * MUST equal the stored value — guards against tampered state setting a wrong (real-
+ * money) withdrawal amount.
+ */
+export function buildWithdrawTransaction(input: BuildWithdrawTransactionInput): BuiltTransaction {
+  validateWithdrawInput(input);
+
+  const { deposit } = input;
+  // Default to the legacy `depositSmallWithdrawFee` (10); only an explicit override differs.
+  const withdrawFee = input.withdrawFee ?? DEPOSIT_SMALL_WITHDRAW_FEE;
+
+  // Re-derive interest from first principles; refuse to sign a tampered amount.
+  const interest = recomputeDepositInterest(deposit);
+  if (interest !== deposit.interest) {
+    throw new Error(
+      `Deposit interest mismatch: stored ${deposit.interest}, recomputed ${interest}.`,
+    );
+  }
+
+  // Re-derive the one-time deposit key and assert it is genuinely ours before spending.
+  const expectedKey = deriveDepositOneTimeKey(deposit, input.keys);
+  if (expectedKey !== deposit.publicKey) {
+    throw new Error("Deposit is not spendable by these keys (one-time key mismatch).");
+  }
+
+  const redeemAmount = deposit.amount + interest - withdrawFee;
+  if (!Number.isSafeInteger(redeemAmount) || redeemAmount <= 0) {
+    throw new Error("Withdraw amount (principal + interest − fee) must be a positive integer.");
+  }
+
+  // Transaction keypair: r (secret) and R = rG (public, goes in extra on chain).
+  const txSecretKey = ccxCrypto.sc_reduce32(randomScalarHex()) as Hex;
+  const txPublicKey = ccxCrypto.ge_scalarmult_base(txSecretKey) as Hex;
+  const extra = `01${txPublicKey}` as Hex;
+
+  // The single redeem output goes back to self (own-address change-path derivation).
+  const outDerivation = generateKeyDerivation(input.ownKeys.viewPublicKey, txSecretKey);
+  const outKey = derivePublicKey(outDerivation, 0, input.ownKeys.spendPublicKey) as Hex;
+  const outputs: BuiltOutput[] = [{ amount: redeemAmount, publicKey: outKey }];
+
+  // version 2, unlock_time 0; single type-03 input (amount = PRINCIPAL), single type-02 output.
+  const struct: TxStruct = {
+    version: DEPOSIT_TX_VERSION,
+    unlock_time: 0,
+    vin: [
+      {
+        type: "input_to_deposit_key",
+        amount: deposit.amount,
+        term: deposit.term,
+        outputIndex: deposit.globalIndex,
+        signatures: 1,
+      },
+    ],
+    vout: [{ amount: redeemAmount, target: { type: "txout_to_key", data: { key: outKey } } }],
+    extra,
+    signatures: [],
+  };
+
+  const prefixHash = ccxTransactions.getTransactionPrefixHash(struct) as Hex;
+
+  // Single signature with the ephemeral pair re-derived from the deposit's SOURCE tx.
+  const derivation = generateKeyDerivation(deposit.txPublicKey, input.keys.view.sec);
+  const ephemeralPublicKey = derivePublicKey(
+    derivation,
+    deposit.outputIndex,
+    input.keys.spend.pub,
+  ) as Hex;
+  const ephemeralSecretKey = deriveSecretKey(
+    derivation,
+    deposit.outputIndex,
+    input.keys.spend.sec,
+  ) as Hex;
+  const signature = generateSignature(prefixHash, ephemeralPublicKey, ephemeralSecretKey);
+  if (!checkSignature(prefixHash, ephemeralPublicKey, signature)) {
+    throw new Error("Withdraw signature verification failed.");
+  }
+
+  const signedStruct: TxStruct = { ...struct, signatures: [[signature]] };
+  const { raw, hash } = ccxTransactions.serializeTransactionWithHash(signedStruct);
+
+  // The single type-03 input is reported as a BuiltInput with no ring/key image.
+  const builtInput: BuiltInput = {
+    amount: deposit.amount,
+    keyImage: "",
+    keyOffsets: [],
+    ringPublicKeys: [deposit.publicKey],
+    realIndex: 0,
+    signatures: [signature],
+  };
+
+  return {
+    txPublicKey,
+    txSecretKey,
+    inputs: [builtInput],
+    outputs,
+    fee: withdrawFee,
+    inputsAmount: deposit.amount,
+    sentAmount: redeemAmount,
+    changeAmount: 0,
+    extra,
+    prefixHash,
+    serialized: raw as Hex,
+    hash: hash as Hex,
+  };
+}
+
+/**
+ * Validate deposit-build inputs at the boundary; fail fast with clear messages.
+ *
+ * Enforces the legacy banking constraints (`createDepositOperation` `:665-685`):
+ *  - amount ≥ `depositMinAmountCoin * m_coin` (1 CCX = 1e6 atomic), a safe integer;
+ *  - termBlocks is a whole-month multiple in 1..12 months — `term % 21900 === 0` and
+ *    `21900 ≤ termBlocks ≤ 262800` (the only terms the V3 interest path accepts).
+ */
+function validateDepositInput(input: BuildDepositTransactionInput): void {
+  validateScanKeys(input.keys);
+  if (!isHex32(input.ownKeys.spendPublicKey) || !isHex32(input.ownKeys.viewPublicKey)) {
+    throw new Error("Own keys must be 64-char hex.");
+  }
+  // Money fields use Number.isSafeInteger so an unsafe value never reaches the serializer.
+  if (!Number.isSafeInteger(input.amount) || input.amount < DEPOSIT_MIN_AMOUNT_ATOMIC) {
+    throw new Error(
+      `Deposit amount must be a safe integer ≥ ${DEPOSIT_MIN_AMOUNT_ATOMIC} atomic (1 CCX).`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(input.termBlocks) ||
+    input.termBlocks % DEPOSIT_MIN_TERM_BLOCK !== 0 ||
+    input.termBlocks < DEPOSIT_MIN_TERM_BLOCK ||
+    input.termBlocks > DEPOSIT_MAX_TERM_BLOCK
+  ) {
+    throw new Error(
+      `Deposit term must be a whole-month multiple of ${DEPOSIT_MIN_TERM_BLOCK} blocks, ` +
+        `1..${DEPOSIT_MAX_TERM_BLOCK / DEPOSIT_MIN_TERM_BLOCK} months ` +
+        `(${DEPOSIT_MIN_TERM_BLOCK}..${DEPOSIT_MAX_TERM_BLOCK} blocks).`,
+    );
+  }
+  if (!Number.isSafeInteger(input.fee) || input.fee < 0) {
+    throw new Error("Fee must be a non-negative safe integer (atomic units).");
+  }
+  if (!Number.isInteger(input.mixin) || input.mixin < 0) {
+    throw new Error("Mixin must be a non-negative integer.");
+  }
+  if (!Array.isArray(input.unspentOutputs) || input.unspentOutputs.length === 0) {
+    throw new Error("At least one unspent output is required.");
+  }
+}
+
+/** Validate withdraw-build inputs at the boundary; fail fast with clear messages. */
+function validateWithdrawInput(input: BuildWithdrawTransactionInput): void {
+  validateScanKeys(input.keys);
+  if (!isHex32(input.ownKeys.spendPublicKey) || !isHex32(input.ownKeys.viewPublicKey)) {
+    throw new Error("Own keys must be 64-char hex.");
+  }
+  const d = input.deposit;
+  // Money fields use Number.isSafeInteger: atomic amounts must stay exactly representable
+  // (the CCX supply is < 2^53, but never let an unsafe value reach the consensus serializer).
+  if (
+    !d ||
+    !Number.isSafeInteger(d.amount) ||
+    d.amount <= 0 ||
+    !Number.isSafeInteger(d.term) ||
+    d.term <= 0 ||
+    !Number.isSafeInteger(d.globalIndex) ||
+    d.globalIndex < 0 ||
+    !Number.isSafeInteger(d.outputIndex) ||
+    d.outputIndex < 0 ||
+    !isHex32(d.txPublicKey) ||
+    !isHex32(d.publicKey) ||
+    !Number.isSafeInteger(d.interest) ||
+    d.interest < 0
+  ) {
+    throw new Error("Withdraw requires a well-formed owned deposit.");
+  }
+  if (
+    input.withdrawFee !== undefined &&
+    (!Number.isSafeInteger(input.withdrawFee) || input.withdrawFee < 0)
+  ) {
+    throw new Error("Withdraw fee must be a non-negative safe integer (atomic units).");
+  }
 }
 
 /** Validate build inputs at the boundary; fail fast with clear messages. */

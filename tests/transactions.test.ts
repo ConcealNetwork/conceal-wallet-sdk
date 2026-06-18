@@ -12,6 +12,7 @@ import {
   type ScanKeys,
   type SpendableOutput,
   scanTransactionOutputs,
+  scanTransactionOutputsAndDeposits,
   selectInputs,
 } from "../src/transactions";
 
@@ -162,7 +163,7 @@ describe("scanTransactionOutputs — receive detection", () => {
     expect(owned.map((o) => o.globalIndex).sort((a, b) => a - b)).toEqual([11, 22]);
   });
 
-  it("detects a type-03 (tagged-key set) owned output", () => {
+  it("a type-03 deposit output is recovered as a deposit, NOT a spendable output", () => {
     const senderDerivation = ccxCrypto.generate_key_derivation(recipient.view.pub, tx.sec);
     const ownedKey = ccxCrypto.derive_public_key(senderDerivation, 0, recipient.spend.pub);
     const rawTx: RawTransaction = {
@@ -175,10 +176,17 @@ describe("scanTransactionOutputs — receive detection", () => {
       ],
       outputIndexes: [314],
     };
+    // Spendable scan EXCLUDES the type-03 deposit (legacy `availableAmount` skips type 03).
     const owned = scanTransactionOutputs(rawTx, keysOf(recipient));
-    expect(owned).toHaveLength(1);
-    expect(owned[0]?.amount).toBe(8000000);
-    expect(owned[0]?.publicKey).toBe(ownedKey);
+    expect(owned).toHaveLength(0);
+    // It is recovered as an OwnedDeposit instead.
+    const { outputs, deposits } = scanTransactionOutputsAndDeposits(rawTx, keysOf(recipient));
+    expect(outputs).toHaveLength(0);
+    expect(deposits).toHaveLength(1);
+    expect(deposits[0]?.amount).toBe(8000000);
+    expect(deposits[0]?.publicKey).toBe(ownedKey);
+    expect(deposits[0]?.globalIndex).toBe(314);
+    expect(deposits[0]?.term).toBe(5040);
   });
 
   it("falls back to in-tx index when the tx carries no global indexes", () => {

@@ -13,13 +13,14 @@
 import type { Account } from "./account";
 import type { StorageAdapter } from "./adapters";
 import type { DaemonClient, DaemonRawTransaction } from "./daemon";
+import { findWithdrawnDepositIndexes, type RawDepositInput } from "./deposits";
 import {
-  type OwnedOutput,
   type RawTransaction,
   type RawTransactionOutput,
-  scanTransactionOutputs,
+  scanTransactionOutputsAndDeposits,
 } from "./transactions";
 import {
+  applyScannedDeposits,
   applyScannedTransaction,
   createWalletState,
   deserializeWalletState,
@@ -123,11 +124,31 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
       const scanTx = toScanTransaction(rawTx);
       if (scanTx === null) continue;
 
-      const ownedOutputs: OwnedOutput[] = scanTransactionOutputs(scanTx, account.keys);
+      // One ECDH scan recovers both spendable outputs and any owned deposits.
+      const { outputs: ownedOutputs, deposits: ownedDeposits } = scanTransactionOutputsAndDeposits(
+        scanTx,
+        account.keys,
+      );
       const inputKeyImages = extractInputKeyImages(rawTx.transaction);
 
-      // Skip transactions that neither pay us nor spend from us — keeps history clean.
-      if (ownedOutputs.length === 0 && inputKeyImages.length === 0) continue;
+      // A type-03 withdraw input spends a deposit by its GLOBAL output index; match
+      // against the deposits we currently own (including any added in this same tx).
+      const depositInputs = extractDepositInputs(rawTx.transaction);
+      const candidateDeposits =
+        ownedDeposits.length > 0 ? [...state.deposits, ...ownedDeposits] : state.deposits;
+      const withdrawnIndexes = findWithdrawnDepositIndexes(depositInputs, candidateDeposits);
+
+      // Skip transactions that touch us in NO way — no owned output, no spent key image,
+      // no owned deposit created, and no owned deposit withdrawn. A tx that ONLY creates
+      // or withdraws a deposit (no type-02 output, no ring key images) still passes here.
+      if (
+        ownedOutputs.length === 0 &&
+        inputKeyImages.length === 0 &&
+        ownedDeposits.length === 0 &&
+        withdrawnIndexes.length === 0
+      ) {
+        continue;
+      }
 
       state = applyScannedTransaction(
         state,
@@ -135,6 +156,12 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
         ownedOutputs,
         inputKeyImages,
       );
+
+      // Add owned deposits and mark any withdrawn deposit spent (mirrors the legacy
+      // `Wallet.deposits` bookkeeping; principal stays out of spendable balance).
+      if (ownedDeposits.length > 0 || withdrawnIndexes.length > 0) {
+        state = applyScannedDeposits(state, ownedDeposits, withdrawnIndexes);
+      }
     }
   }
 
@@ -242,6 +269,36 @@ export function extractInputKeyImages(transaction: unknown): string[] {
     }
   }
   return keyImages;
+}
+
+/**
+ * Extract every type-`03` deposit-spend input (`input_to_deposit_key`) from a raw
+ * daemon transaction's `vin`, narrowed to the {@link RawDepositInput} shape needed for
+ * withdrawal detection (`type` + `outputIndex` + `term`). CryptoNote inputs may carry
+ * the fields directly (`vin[i]`) or nested under `value` (`vin[i].value`), matching the
+ * daemon shapes; the type tag may be `"03"` or `"input_to_deposit_key"`. Returns `[]`
+ * when the tx has no deposit inputs (the common case for regular spends).
+ */
+export function extractDepositInputs(transaction: unknown): RawDepositInput[] {
+  if (!isRecord(transaction)) return [];
+  const vin = transaction.vin;
+  if (!Array.isArray(vin)) return [];
+
+  const deposits: RawDepositInput[] = [];
+  for (const input of vin) {
+    if (!isRecord(input)) continue;
+    const source = isRecord(input.value) ? input.value : input;
+    const type = input.type ?? source.type;
+    if (type !== "input_to_deposit_key" && type !== "03") continue;
+    const outputIndex = source.outputIndex;
+    const term = source.term;
+    deposits.push({
+      type: "input_to_deposit_key",
+      ...(typeof outputIndex === "number" ? { outputIndex } : {}),
+      ...(typeof term === "number" ? { term } : {}),
+    });
+  }
+  return deposits;
 }
 
 /** `extra` may arrive as a hex string or a byte array; normalize to hex or `null`. */
