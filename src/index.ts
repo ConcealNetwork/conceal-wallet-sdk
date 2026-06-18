@@ -50,6 +50,23 @@ export {
   type RawDepositInput,
   recomputeDepositInterest,
 } from "./deposits";
+export {
+  type EncryptedWalletEnvelope,
+  hasStoredWallet,
+  normalizeWalletPassword,
+  type OpenWalletOptions,
+  openEncryptedWallet,
+  openStoredWallet,
+  type RawAddressEntry,
+  type RawFullyEncryptedWallet,
+  type RawInlineEncryptedWallet,
+  type RawTxPrivateKeys,
+  type RawWalletOptions,
+  type RawWalletV1,
+  saveEncryptedWallet,
+  saveStoredWallet,
+  WALLET_STORAGE_KEY,
+} from "./envelope";
 /** Wallet fusion / optimization (denomination-bucketed self-consolidation). */
 export * as fusion from "./fusion";
 export {
