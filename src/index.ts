@@ -23,6 +23,8 @@ export {
 } from "./address";
 /** Low-level typed crypto primitives (advanced use). */
 export * as crypto from "./crypto";
+/** Initialize the lib-js WASM — await once in the browser before any crypto use. */
+export { init } from "./crypto";
 export {
   createDaemonClient,
   type DaemonClient,

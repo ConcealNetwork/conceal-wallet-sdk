@@ -82,5 +82,28 @@ export function randomSeed(): Hex {
   return scReduce32(hex);
 }
 
+let wasmReady: Promise<void> | null = null;
+
+/**
+ * Initialize the underlying conceal-lib-js WASM (crypto + cypher).
+ *
+ * **Required in the browser before ANY crypto/cypher use.** A bundler resolves
+ * lib-js to its `browser` entry, which loads the WASM *asynchronously* and
+ * exposes an `init()` that must be awaited — call this once at startup (e.g.
+ * before opening/creating a wallet). In Node the WASM auto-initializes on import,
+ * so lib-js exposes no `init` and this is a no-op. Idempotent (memoized).
+ */
+export async function init(): Promise<void> {
+  if (wasmReady === null) {
+    wasmReady = (async () => {
+      const lib = (await import("conceal-lib-js")) as { init?: () => Promise<unknown> };
+      if (typeof lib.init === "function") {
+        await lib.init();
+      }
+    })();
+  }
+  return wasmReady;
+}
+
 // Re-export the lower-level namespaces for advanced consumers / internal modules.
 export { ccxAddress, ccxCrypto, cnutils, cypher, mnemonic };
