@@ -117,6 +117,17 @@ export {
   SEED_LANGUAGES,
 } from "./mnemonic";
 export {
+  createOutboundQueue,
+  type EnqueueOptions,
+  OUTBOUND_QUEUE_NAMESPACE,
+  type OutboundQueue,
+  type OutboundQueueEntry,
+  type OutboundQueueFailReason,
+  type OutboundQueueOptions,
+  type OutboundQueueResult,
+  type OutboundQueueState,
+} from "./outbound-queue";
+export {
   createWalletSync,
   DEFAULT_BATCH_SIZE,
   DEFAULT_STORAGE_KEY,
