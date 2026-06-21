@@ -119,7 +119,12 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
 
   /** Fetch + fold one inclusive block batch `[startBlock, endBlock]` into state. */
   async function syncBatch(startBlock: number, endBlock: number): Promise<void> {
-    const rawTransactions = await daemon.getWalletSyncData(startBlock, endBlock);
+    // `getWalletSyncData`'s range is HALF-OPEN `[start, end)` — the daemon EXCLUDES the upper
+    // bound. Request `endBlock + 1` so this covers the INCLUSIVE batch `[startBlock, endBlock]`.
+    // Passing `endBlock` (the prior behavior) silently dropped block `endBlock` at EVERY batch
+    // boundary (100, 200, 300, …) — a tx mined into a boundary block was never scanned, so its
+    // funds never appeared in the balance. `endBlock + 1` past the chain tip is safely clamped.
+    const rawTransactions = await daemon.getWalletSyncData(startBlock, endBlock + 1);
     for (const rawTx of rawTransactions) {
       const scanTx = toScanTransaction(rawTx);
       if (scanTx === null) continue;
