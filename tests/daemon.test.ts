@@ -268,6 +268,63 @@ describe("getWalletSyncData", () => {
   });
 });
 
+describe("getTransactionsPool", () => {
+  it("posts to getrawtransactionspool and maps pool transactions", async () => {
+    const fetchMock = jsonFetch({
+      status: "OK",
+      transactions: [
+        {
+          transaction: { version: 1, extra: "01ab", vout: [{ amount: 5 }] },
+          timestamp: 1782024198,
+          output_indexes: [],
+          height: 0,
+          block_hash: "0".repeat(64),
+          hash: "dddd",
+          fee: 1000,
+        },
+        // Empty slot — skipped, not fabricated.
+        { transaction: null },
+      ],
+    });
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: fetchMock });
+
+    const result = await client.getTransactionsPool();
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({
+      transaction: { version: 1, extra: "01ab", vout: [{ amount: 5 }] },
+      timestamp: 1782024198,
+      outputIndexes: [],
+      height: 0,
+      blockHash: "0".repeat(64),
+      hash: "dddd",
+      fee: 1000,
+    });
+
+    const calls = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const [url, init] = calls[0] as [string, RequestInit];
+    expect(url).toBe(`${NODE}getrawtransactionspool`);
+    expect((init.method ?? "GET").toUpperCase()).toBe("POST");
+  });
+
+  it("rejects on a non-OK status", async () => {
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: jsonFetch({ status: "BUSY" }) });
+    await expect(client.getTransactionsPool()).rejects.toThrow();
+  });
+
+  it("rejects when the transactions array is missing", async () => {
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: jsonFetch({ status: "OK" }) });
+    await expect(client.getTransactionsPool()).rejects.toThrow(/transactions array/);
+  });
+
+  it("rejects a malformed (non-object) transaction entry", async () => {
+    const client = createDaemonClient({
+      nodeUrl: NODE,
+      fetch: jsonFetch({ status: "OK", transactions: ["nope"] }),
+    });
+    await expect(client.getTransactionsPool()).rejects.toThrow(/malformed/);
+  });
+});
+
 describe("timeouts", () => {
   beforeEach(() => {
     vi.useFakeTimers();

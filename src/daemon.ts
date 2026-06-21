@@ -105,6 +105,14 @@ export interface DaemonClient {
     endBlock: number,
     includeMinerTxs?: boolean,
   ): Promise<DaemonRawTransaction[]>;
+  /**
+   * Fetch the daemon's current mempool (unconfirmed) transactions in the same
+   * full `DaemonRawTransaction` shape as {@link getWalletSyncData} — i.e. each
+   * carries the raw `transaction` (vout/extra) so the engine can scan it for
+   * owned outputs. Lets a wallet surface INCOMING pending funds before they mine.
+   * `height`/`blockHash` are zeroed for pool entries (not yet in a block).
+   */
+  getTransactionsPool(): Promise<DaemonRawTransaction[]>;
 }
 
 /** Default per-request timeout (matches the legacy `NodeWorker.timeout`). */
@@ -180,6 +188,26 @@ function assertStatusOk(body: Record<string, unknown>, context: string): void {
     const status = typeof body.status === "string" ? body.status : "unknown";
     throw new Error(`Daemon ${context} returned a non-OK status (${status}).`);
   }
+}
+
+/**
+ * Map one raw daemon transaction entry (the shared shape returned by both
+ * `get_raw_transactions_by_heights` and `getrawtransactionspool`) into a
+ * {@link DaemonRawTransaction}. Pool entries simply carry height 0 + a zero block hash.
+ */
+function mapRawTransaction(rawTx: Record<string, unknown>): DaemonRawTransaction {
+  const outputIndexes = Array.isArray(rawTx.output_indexes)
+    ? rawTx.output_indexes.map((value) => Number(value))
+    : [];
+  return {
+    transaction: rawTx.transaction,
+    timestamp: Number(rawTx.timestamp) || 0,
+    outputIndexes,
+    height: Number(rawTx.height) || 0,
+    blockHash: typeof rawTx.block_hash === "string" ? rawTx.block_hash : "",
+    hash: typeof rawTx.hash === "string" ? rawTx.hash : "",
+    fee: Number(rawTx.fee) || 0,
+  };
 }
 
 export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
@@ -378,18 +406,34 @@ export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
       if (rawTx.transaction === undefined || rawTx.transaction === null) {
         continue;
       }
-      const outputIndexes = Array.isArray(rawTx.output_indexes)
-        ? rawTx.output_indexes.map((value) => Number(value))
-        : [];
-      result.push({
-        transaction: rawTx.transaction,
-        timestamp: Number(rawTx.timestamp) || 0,
-        outputIndexes,
-        height: Number(rawTx.height) || 0,
-        blockHash: typeof rawTx.block_hash === "string" ? rawTx.block_hash : "",
-        hash: typeof rawTx.hash === "string" ? rawTx.hash : "",
-        fee: Number(rawTx.fee) || 0,
-      });
+      result.push(mapRawTransaction(rawTx));
+    }
+    return result;
+  }
+
+  async function getTransactionsPool(): Promise<DaemonRawTransaction[]> {
+    // `getrawtransactionspool` returns the same per-entry shape as
+    // `get_raw_transactions_by_heights` (transaction/timestamp/output_indexes/
+    // height/block_hash/hash/fee) — pool entries simply carry height 0 and a
+    // zero block_hash. Parse identically so the caller can scan outputs.
+    const body = await request("getrawtransactionspool", "POST", {});
+    assertStatusOk(body, "getrawtransactionspool");
+
+    const rawTransactions = body.transactions;
+    if (!Array.isArray(rawTransactions)) {
+      throw new Error("Daemon getrawtransactionspool is missing the transactions array.");
+    }
+
+    const result: DaemonRawTransaction[] = [];
+    for (let i = 0; i < rawTransactions.length; i++) {
+      const rawTx = rawTransactions[i];
+      if (!isRecord(rawTx)) {
+        throw new Error(`Daemon pool transaction entry ${i} is malformed.`);
+      }
+      if (rawTx.transaction === undefined || rawTx.transaction === null) {
+        continue;
+      }
+      result.push(mapRawTransaction(rawTx));
     }
     return result;
   }
@@ -402,5 +446,6 @@ export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
     sendRawTransaction,
     getRandomOuts,
     getWalletSyncData,
+    getTransactionsPool,
   };
 }
