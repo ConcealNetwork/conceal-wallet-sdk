@@ -99,7 +99,11 @@ export interface DaemonClient {
   sendRawTransaction(txHex: Hex): Promise<SendRawTransactionResult>;
   /** Fetch `count` random decoy outputs for each requested amount. */
   getRandomOuts(amounts: number[], count: number): Promise<DaemonRandomOutsForAmount[]>;
-  /** Fetch raw transactions for the inclusive block range `[startBlock, endBlock]`. */
+  /**
+   * Fetch raw transactions for the HALF-OPEN block range `[startBlock, endBlock)` — the daemon
+   * EXCLUDES the upper bound `endBlock` (e.g. `(100, 101)` returns only block 100; `(200, 300)`
+   * returns 200..299). To cover an INCLUSIVE range `[a, b]`, pass `endBlock = b + 1`.
+   */
   getWalletSyncData(
     startBlock: number,
     endBlock: number,
@@ -384,6 +388,8 @@ export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
     // The daemon treats block 0 as genesis; the legacy client normalizes to 1.
     const normalizedStart = startBlock === 0 ? 1 : startBlock;
 
+    // `range: true` makes the daemon return the HALF-OPEN range `[normalizedStart, endBlock)` —
+    // the upper bound is EXCLUDED. Callers that want an inclusive range pass `endBlock = last + 1`.
     const body = await request("get_raw_transactions_by_heights", "POST", {
       heights: [normalizedStart, endBlock],
       include_miner_txs: includeMinerTxs,

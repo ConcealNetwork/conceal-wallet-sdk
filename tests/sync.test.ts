@@ -88,7 +88,9 @@ function foreignDaemonTx(height: number): DaemonRawTransaction {
 
 /**
  * Mock {@link DaemonClient}: serves a fixed height and a height→transactions map.
- * Each `getWalletSyncData(start, end)` returns the txs whose height ∈ [start, end].
+ * Each `getWalletSyncData(start, end)` returns the txs whose height ∈ [start, end) — HALF-OPEN,
+ * matching the real daemon (it excludes the upper bound). This fidelity is what makes the
+ * batch-boundary regression below meaningful.
  */
 function mockDaemon(
   height: number,
@@ -119,7 +121,8 @@ function mockDaemon(
     getWalletSyncData: (start: number, end: number) => {
       syncCalls.push([start, end]);
       const out: DaemonRawTransaction[] = [];
-      for (let h = start; h <= end; h++) {
+      // HALF-OPEN [start, end): exclude the upper bound, like the real daemon.
+      for (let h = start; h < end; h++) {
         const txs = txsByHeight.get(h);
         if (txs) out.push(...txs);
       }
@@ -301,11 +304,34 @@ describe("createWalletSync.syncOnce", () => {
     await sync.load();
     const state = await sync.syncOnce();
     expect(state.scannedHeight).toBe(250);
+    // Each call's upper bound is `endBlock + 1` (half-open daemon range): batch [1,100] is
+    // requested as [1, 101), [101,200] as [101, 201), etc. — contiguous, no boundary gap.
     expect(daemon.syncCalls).toEqual([
-      [1, 100],
-      [101, 200],
-      [201, 250],
+      [1, 101],
+      [101, 201],
+      [201, 251],
     ]);
+  });
+
+  it("scans batch-boundary blocks — no gap at endBlock (half-open daemon range)", async () => {
+    // A tx mined into block 100 — exactly the boundary between batch [1,100] and [101,200].
+    // Pre-fix (requesting inclusive `endBlock`), block 100 was dropped at every boundary and
+    // this owned output would never be detected.
+    const boundaryTx = ownedDaemonTx(recipient, txKeypair("cc"), 7_000_000, {
+      height: 100,
+      globalIndex: 5,
+      hash: "cd".repeat(32),
+    });
+    const daemon = mockDaemon(250, new Map([[100, [boundaryTx]]]));
+    const sync = createWalletSync({ daemon, account: accountOf(recipient), batchSize: 100 });
+    await sync.load();
+    const state = await sync.syncOnce();
+
+    expect(state.scannedHeight).toBe(250);
+    // The boundary-block output was scanned → balance + history reflect it.
+    expect(getBalance(state).total).toBe(7_000_000);
+    expect(state.outputs).toHaveLength(1);
+    expect(getTransactions(state)[0]?.amount).toBe(7_000_000);
   });
 
   it("is a no-op (no save, no onUpdate) when already at the tip", async () => {
@@ -560,10 +586,11 @@ describe("createWalletSync.syncOnce — deposits", () => {
       end: number,
     ) => {
       const out: DaemonRawTransaction[] = [];
+      // HALF-OPEN [start, end): exclude the upper bound, like the real daemon + mockDaemon.
       if (
         withdrawTx.height !== undefined &&
         withdrawTx.height >= start &&
-        withdrawTx.height <= end
+        withdrawTx.height < end
       ) {
         out.push(withdrawTx);
       }

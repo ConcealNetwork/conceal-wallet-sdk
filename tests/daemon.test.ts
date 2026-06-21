@@ -211,7 +211,9 @@ describe("getRandomOuts", () => {
 });
 
 describe("getWalletSyncData", () => {
-  it("posts the inclusive height range and maps transactions", async () => {
+  it("posts the height range verbatim (half-open [start, end)) and maps transactions", async () => {
+    // The daemon's range is HALF-OPEN: `heights: [5000, 5001]` returns block 5000 only (5001 is
+    // excluded). The client passes the bounds through unchanged; inclusive-range callers add +1.
     const fetchMock = jsonFetch({
       status: "OK",
       transactions: [
@@ -250,6 +252,19 @@ describe("getWalletSyncData", () => {
       include_miner_txs: true,
       range: true,
     });
+  });
+
+  it("posts the upper bound verbatim even past the tip (the daemon clamps it)", async () => {
+    // The final sync batch passes `endBlock + 1`, which can be one past the chain tip. The client
+    // must NOT clamp — it posts the bound as-is and relies on the daemon to return only existing
+    // blocks (verified live: a past-tip upper bound returns up to the tip, no error).
+    const fetchMock = jsonFetch({ status: "OK", transactions: [] });
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: fetchMock });
+
+    await client.getWalletSyncData(5000, 5001 /* tip is 5000 → 5001 is one past it */);
+    const calls = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const [, init] = calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string).heights).toEqual([5000, 5001]);
   });
 
   it("normalizes a startBlock of 0 to 1 (genesis guard)", async () => {
