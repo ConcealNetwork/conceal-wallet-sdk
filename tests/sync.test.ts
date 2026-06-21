@@ -115,6 +115,7 @@ function mockDaemon(
     getNodeFeeAddress: () => Promise.resolve(""),
     sendRawTransaction: () => Promise.resolve({ status: "OK" }),
     getRandomOuts: () => Promise.resolve([]),
+    getTransactionsPool: () => Promise.resolve([]),
     getWalletSyncData: (start: number, end: number) => {
       syncCalls.push([start, end]);
       const out: DaemonRawTransaction[] = [];
