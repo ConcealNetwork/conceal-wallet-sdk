@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Deposits / banking (CryptoNote type-`03`).
  *
@@ -22,52 +25,23 @@
  * serializer; this module is the interest + scan + type half.
  */
 import { derivePublicKey, generateKeyDerivation } from "./crypto";
+import {
+  BLOCK_WITH_MISSING_INTEREST,
+  COIN_UNIT_PLACES,
+  DEPOSIT_HEIGHT_V3,
+  DEPOSIT_MAX_TERM,
+  DEPOSIT_MAX_TOTAL_RATE,
+  DEPOSIT_MIN_TERM,
+  DEPOSIT_MIN_TERM_V3,
+  DEPOSIT_MIN_TOTAL_RATE_FACTOR,
+  DEPOSIT_RATE_V3,
+  END_MULTIPLIER_BLOCK,
+  INVESTMENT_MQ,
+  MULTIPLIER_FACTOR,
+  WEEKLY_BASE_INTEREST,
+  WEEKLY_INTEREST_INCREMENT,
+} from "./constants/blockchain";
 import type { Hex, WalletKeys } from "./types";
-
-// ---------------------------------------------------------------------------
-// Constants (lib/config/wallet-network-scalars.mjs → config.ts, Interest.ts)
-// ---------------------------------------------------------------------------
-
-/** Atomic units per CCX exponent (`COIN_UNIT_PLACES`). */
-export const COIN_UNIT_PLACES = 6;
-/** `m_coin` = 10^coinUnitPlaces = 1e6 (atomic units per CCX). */
-export const M_COIN = 10 ** COIN_UNIT_PLACES;
-/** Transaction version for ALL non-regular (deposit + withdraw) txs (`DEPOSIT_TX_VERSION`). */
-export const DEPOSIT_TX_VERSION = 2;
-/** One month, in blocks (`depositMinTermBlock`). The V3 term is `months * this`. */
-export const DEPOSIT_MIN_TERM_BLOCK = 21900;
-/** Minimum deposit term in months (`depositMinTermMonth`). */
-export const DEPOSIT_MIN_TERM_MONTH = 1;
-/** Maximum deposit term in months (`depositMaxTermMonth`). */
-export const DEPOSIT_MAX_TERM_MONTH = 12;
-/** Minimum deposit amount in whole CCX (`depositMinAmountCoin`). */
-export const DEPOSIT_MIN_AMOUNT_COIN = 1;
-/** Minimum deposit amount in atomic units (`depositMinAmountCoin * m_coin` = 1e6). */
-export const DEPOSIT_MIN_AMOUNT_ATOMIC = DEPOSIT_MIN_AMOUNT_COIN * 10 ** COIN_UNIT_PLACES;
-/** Maximum deposit term in blocks (`depositMaxTermMonth * depositMinTermBlock` = 262800). */
-export const DEPOSIT_MAX_TERM_BLOCK = DEPOSIT_MAX_TERM_MONTH * DEPOSIT_MIN_TERM_BLOCK;
-/** Deposit-tx network fee, atomic units (`coinFee`). */
-export const DEPOSIT_TX_FEE = 1000;
-/** Withdraw-tx fee, atomic units (`depositSmallWithdrawFee`) — NOT the 1000 coinFee. */
-export const DEPOSIT_SMALL_WITHDRAW_FEE = 10;
-/** V3 monthly base rates by amount tier: `[ <10000, >=10000 & <20000, >=20000 ]`. */
-export const DEPOSIT_RATE_V3: readonly number[] = [0.029, 0.039, 0.049];
-
-// Interest dispatch constants (verbatim from Interest.ts:38-51).
-const DEPOSIT_MIN_TERM = 5040; // One week
-const DEPOSIT_MAX_TERM = 1 * 12 * 21900; // 262800 — one year (legacy V1 divisor)
-const DEPOSIT_MIN_TERM_V3 = 21900; // One month
-const DEPOSIT_HEIGHT_V3 = 413400; // Height when V3 deposit rates were activated
-const DEPOSIT_MIN_TOTAL_RATE_FACTOR = 0; // Constant rate
-const DEPOSIT_MAX_TOTAL_RATE = 4; // Legacy deposits
-const BLOCK_WITH_MISSING_INTEREST = 425799; // Block with special handling
-const END_MULTIPLIER_BLOCK = 12750; // Early-deposit 100× multiplier boundary
-const MULTIPLIER_FACTOR = 100;
-
-// V2 weekly/investment constants (config fallbacks used as the canonical values).
-const INVESTMENT_MQ = 1.4473;
-const WEEKLY_BASE_INTEREST = 0.0696;
-const WEEKLY_INTEREST_INCREMENT = 0.0002;
 
 // ---------------------------------------------------------------------------
 // Interest (VERBATIM port of Interest.ts — bit-exact with the daemon)

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Wallet account creation + restoration. An {@link Account} is the keys + address
  * for a CCX wallet — the root object the higher-level wallet/sync layers build on.

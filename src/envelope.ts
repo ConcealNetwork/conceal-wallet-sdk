@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Encrypted wallet envelope — the documented v1 codec for the stored `"wallet"`
  * blob. Ported byte-for-byte from `conceal-web-wallet`'s `WalletRepository`

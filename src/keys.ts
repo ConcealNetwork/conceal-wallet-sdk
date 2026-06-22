@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Legacy key normalization — opens the canonical v1 `UserKeys` shape out of the
  * many partial / historical shapes the original wallet-core stored. Ported

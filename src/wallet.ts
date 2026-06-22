@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Pure wallet STATE — the in-memory model of a CCX wallet's scanned history,
  * owned outputs, and balance. Modeled on the legacy `conceal-web-wallet`

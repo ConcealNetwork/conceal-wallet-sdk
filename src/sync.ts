@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Wallet SYNC orchestration — drives a {@link WalletState} forward from daemon
  * data, persisting to a {@link StorageAdapter} as it goes.

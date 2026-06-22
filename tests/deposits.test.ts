@@ -2,11 +2,13 @@ import { crypto as ccxCrypto, transactions as ccxTransactions } from "conceal-li
 import { describe, expect, it } from "vitest";
 import { createAccount } from "../src/account";
 import {
-  calculateDepositInterest,
   DEPOSIT_MIN_TERM_BLOCK,
   DEPOSIT_SMALL_WITHDRAW_FEE,
   DEPOSIT_TX_FEE,
   DEPOSIT_TX_VERSION,
+} from "../src/constants";
+import {
+  calculateDepositInterest,
   findWithdrawnDepositIndexes,
   type OwnedDeposit,
 } from "../src/deposits";

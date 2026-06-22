@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * conceal-wallet-sdk — framework-agnostic, typed TypeScript wallet engine for
  * Conceal (CCX), built on the conceal-lib-js cryptographic primitives.
@@ -21,6 +24,9 @@ export {
   type PaymentRequest,
   parsePaymentUri,
 } from "./address";
+/** Chain / consensus scalars — single source of truth. */
+export * from "./constants";
+export * as constants from "./constants";
 /** Low-level typed crypto primitives (advanced use). */
 export * as crypto from "./crypto";
 /** Initialize the lib-js WASM — await once in the browser before any crypto use. */
@@ -34,20 +40,10 @@ export {
 /** Deposits / banking (type-`03`): interest, scan, locked/unlocked state. */
 export * as deposits from "./deposits";
 export {
-  COIN_UNIT_PLACES,
   calculateDepositInterest,
-  DEPOSIT_MAX_TERM_MONTH,
-  DEPOSIT_MIN_AMOUNT_COIN,
-  DEPOSIT_MIN_TERM_BLOCK,
-  DEPOSIT_MIN_TERM_MONTH,
-  DEPOSIT_RATE_V3,
-  DEPOSIT_SMALL_WITHDRAW_FEE,
-  DEPOSIT_TX_FEE,
-  DEPOSIT_TX_VERSION,
   type DepositInterestInput,
   deriveDepositOneTimeKey,
   findWithdrawnDepositIndexes,
-  M_COIN,
   type OwnedDeposit,
   type RawDepositInput,
   recomputeDepositInterest,
@@ -74,13 +70,6 @@ export * as fusion from "./fusion";
 export {
   type BuildFusionTransactionInput,
   buildFusionTransaction,
-  CRYPTONOTE_BLOCK_GRANTED_FULL_REWARD_ZONE,
-  DEFAULT_MIXIN,
-  DUST_THRESHOLD,
-  FUSION_TX_MAX_INPUT_COUNT,
-  FUSION_TX_MAX_SIZE,
-  FUSION_TX_MIN_IN_OUT_COUNT_RATIO,
-  FUSION_TX_MIN_INPUT_COUNT,
   type FusionAmountApplicability,
   type FusionInputSelection,
   type FusionShuffle,
@@ -90,14 +79,7 @@ export {
   getApproximateTransactionSize,
   isAmountApplicableInFusionInput,
   isOptimizationNeeded,
-  MAX_FUSION_OUTPUTS,
-  MINIMUM_FEE_V2,
-  NUM_BUCKETS,
-  OPTIMIZE_OUTPUTS,
-  OPTIMIZE_THRESHOLD,
-  PRETTY_AMOUNTS,
   selectFusionInputs,
-  UPGRADE_HEIGHT_V4,
 } from "./fusion";
 export {
   analyzeKeysShape,

@@ -1,23 +1,25 @@
 import { crypto as ccxCrypto } from "conceal-lib-js";
 import { describe, expect, it } from "vitest";
 import {
-  type BuildFusionTransactionInput,
-  buildFusionTransaction,
   DEFAULT_MIXIN,
   DUST_THRESHOLD,
   FUSION_TX_MAX_SIZE,
   FUSION_TX_MIN_INPUT_COUNT,
-  getApproximateMaximumInputCount,
-  getApproximateTransactionSize,
-  isAmountApplicableInFusionInput,
-  isOptimizationNeeded,
   MAX_FUSION_OUTPUTS,
   MINIMUM_FEE_V2,
   OPTIMIZE_OUTPUTS,
   OPTIMIZE_THRESHOLD,
   PRETTY_AMOUNTS,
-  selectFusionInputs,
   UPGRADE_HEIGHT_V4,
+} from "../src/constants";
+import {
+  type BuildFusionTransactionInput,
+  buildFusionTransaction,
+  getApproximateMaximumInputCount,
+  getApproximateTransactionSize,
+  isAmountApplicableInFusionInput,
+  isOptimizationNeeded,
+  selectFusionInputs,
 } from "../src/fusion";
 import type { ScanKeys } from "../src/transactions";
 import {

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /** Lowercase hex string (no `0x` prefix), as used throughout conceal-lib-js. */
 export type Hex = string;
 

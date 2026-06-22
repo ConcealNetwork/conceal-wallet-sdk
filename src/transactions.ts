@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Transaction scanning + spend building, ported from `conceal-web-wallet`
  * (`TransactionsExplorer` scan `parse`/`ownsTx` + `Cn.createTx`/`construct_tx`)
@@ -32,8 +35,21 @@ import {
   DEPOSIT_MAX_TERM_BLOCK,
   DEPOSIT_MIN_AMOUNT_ATOMIC,
   DEPOSIT_MIN_TERM_BLOCK,
-  DEPOSIT_SMALL_WITHDRAW_FEE,
   DEPOSIT_TX_VERSION,
+} from "./constants/blockchain";
+import {
+  MAX_CIPHERTEXT_BYTES,
+  MAX_MESSAGE_BODY_BYTES,
+  TX_EXTRA_MERGE_MINING_TAG,
+  TX_EXTRA_MESSAGE_TAG,
+  TX_EXTRA_MYSTERIOUS_MINERGATE_TAG,
+  TX_EXTRA_NONCE,
+  TX_EXTRA_TAG_PADDING,
+  TX_EXTRA_TAG_PUBKEY,
+  TX_EXTRA_TTL,
+} from "./constants/message-const";
+import { DEPOSIT_SMALL_WITHDRAW_FEE, MESSAGE_TX_AMOUNT_ATOMIC } from "./constants/tx-const";
+import {
   deriveDepositOneTimeKey,
   type OwnedDeposit,
   recomputeDepositInterest,
@@ -44,42 +60,6 @@ import type { Hex, WalletKeys } from "./types";
 
 /** Re-export the shared hex alias for convenience. */
 export type { Hex } from "./types";
-
-// ---------------------------------------------------------------------------
-// tx_extra record framing — message + TTL (ported from Cn.ts:76-84 / 2266-2332,
-// TransactionsExplorer.ts:81-93 / 129-179 / 442-493, Varint.ts decode).
-// ---------------------------------------------------------------------------
-
-/** tx_extra record tag — padding (zero-run, no size byte). */
-export const TX_EXTRA_TAG_PADDING = 0x00;
-/** tx_extra record tag — 32-byte tx public key `R` (no size byte; fixed 32 bytes). */
-export const TX_EXTRA_TAG_PUBKEY = 0x01;
-/** tx_extra record tag — nonce (has a size byte; sub-tags = plaintext / encrypted payment id). */
-export const TX_EXTRA_NONCE = 0x02;
-/** tx_extra record tag — merge-mining (has a size byte). */
-export const TX_EXTRA_MERGE_MINING_TAG = 0x03;
-/** tx_extra record tag — encrypted message (size byte = ciphertext length). */
-export const TX_EXTRA_MESSAGE_TAG = 0x04;
-/** tx_extra record tag — TTL (size byte = value-varint byte length). */
-export const TX_EXTRA_TTL = 0x05;
-/** tx_extra record tag — mysterious minergate (has a size byte). */
-export const TX_EXTRA_MYSTERIOUS_MINERGATE_TAG = 0xde;
-
-/** Nonce sub-tag (first byte of a `0x02` record's data) — plaintext payment id. */
-export const TX_EXTRA_NONCE_PAYMENT_ID = 0x00;
-/** Nonce sub-tag (first byte of a `0x02` record's data) — encrypted payment id. */
-export const TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID = 0x01;
-
-/** Trailing zero bytes in the encrypted-message plaintext frame. */
-export const TX_EXTRA_MESSAGE_CHECKSUM_SIZE = 4;
-/** Single-byte length-field cap: the encrypted message can be at most 255 bytes. */
-export const MAX_CIPHERTEXT_BYTES = 255;
-/** Max UTF-8 body bytes (255 ciphertext cap − 4-byte checksum), the `MAX_MESSAGE_SIZE` scalar. */
-export const MAX_MESSAGE_BODY_BYTES = MAX_CIPHERTEXT_BYTES - TX_EXTRA_MESSAGE_CHECKSUM_SIZE;
-/** Recipient self-output amount (atomic) that marks a transaction as a message. */
-export const MESSAGE_TX_AMOUNT_ATOMIC = 100;
-/** Remote-node fee (atomic), paid as a second destination on a non-TTL message. */
-export const REMOTE_NODE_FEE_ATOMIC = 10000;
 
 // ---------------------------------------------------------------------------
 // SCAN
