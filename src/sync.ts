@@ -163,6 +163,12 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
         { hash: scanTx.hash, height: scanTx.height, timestamp: rawTx.timestamp },
         ownedOutputs,
         inputKeyImages,
+        {
+          ownedDeposits,
+          depositInputs,
+          rawTransaction: rawTx.transaction,
+          fee: rawTx.fee,
+        },
       );
 
       // Add owned deposits and mark any withdrawn deposit spent (mirrors the legacy

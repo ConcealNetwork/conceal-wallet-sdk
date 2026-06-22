@@ -15,7 +15,12 @@
  * output is one whose key image has appeared in some transaction's inputs.
  */
 import type { Account } from "./account";
-import type { OwnedDeposit } from "./deposits";
+import type { OwnedDeposit, RawDepositInput } from "./deposits";
+import {
+  classifyTransactionKind,
+  isDustOutput,
+  type WalletTransactionKind,
+} from "./transaction-kind";
 import type { OwnedOutput } from "./transactions";
 
 /** Direction of value flow for a {@link WalletTransaction}, from the wallet's view. */
@@ -33,6 +38,25 @@ export interface WalletTransaction {
   amount: number;
   /** Whether the wallet received (`"in"`) or spent (`"out"`) in this transaction. */
   direction: TransactionDirection;
+  /**
+   * UI-facing type (miner / deposit / withdrawal / fusion / send / receive).
+   * Set at scan time; absent on pre-v3 blobs → infer from {@link direction}.
+   */
+  kind?: WalletTransactionKind;
+}
+
+/** Scan-time context for classifying {@link WalletTransaction.kind}. */
+export interface ApplyScannedTransactionContext {
+  /** Newly-scanned type-`03` deposits from this tx (before {@link applyScannedDeposits}). */
+  ownedDeposits?: readonly OwnedDeposit[];
+  /** Type-`03` deposit inputs spent in this tx. */
+  depositInputs?: readonly RawDepositInput[];
+  /** Raw daemon `transaction` object (vin/vout shape for fusion/coinbase). */
+  rawTransaction?: unknown;
+  /** Transaction fee in atomic units, when known. */
+  fee?: number;
+  /** When replaying a legacy blob, skip heuristics and use the stored kind. */
+  kindOverride?: WalletTransactionKind;
 }
 
 /** The complete, serializable state of a wallet. */
@@ -94,6 +118,7 @@ export function applyScannedTransaction(
   tx: { hash?: string; height?: number; timestamp?: number },
   ownedOutputs: readonly OwnedOutput[],
   spentKeyImages: readonly string[],
+  context: ApplyScannedTransactionContext = {},
 ): WalletState {
   // 1. Merge newly-owned outputs, de-duped against what we already hold.
   const existingOutputKeys = new Set(state.outputs.map(outputDedupeKey));
@@ -132,11 +157,23 @@ export function applyScannedTransaction(
     // Net out (spent) wins as the direction only when it exceeds received.
     const direction: TransactionDirection = spentAmount > receivedAmount ? "out" : "in";
     const amount = Math.abs(receivedAmount - spentAmount) || receivedAmount || spentAmount;
+    const kind =
+      context.kindOverride ??
+      classifyTransactionKind({
+        direction,
+        ownedOutputs: addedOutputs,
+        ownedDeposits: context.ownedDeposits,
+        depositInputs: context.depositInputs,
+        rawTransaction: context.rawTransaction,
+        fee: context.fee,
+        receivedAmount,
+      });
     const entry: WalletTransaction = {
       hash: typeof tx.hash === "string" && tx.hash.length > 0 ? tx.hash : syntheticHash(state),
       height: typeof tx.height === "number" ? tx.height : 0,
       amount,
       direction,
+      kind,
       ...(typeof tx.timestamp === "number" ? { timestamp: tx.timestamp } : {}),
     };
     nextTransactions = [...state.transactions, entry];
@@ -186,6 +223,14 @@ export function getTransactions(state: WalletState): WalletTransaction[] {
 export function getUnspentOutputs(state: WalletState): OwnedOutput[] {
   const spent = new Set(state.spentKeyImages);
   return state.outputs.filter((output) => !spent.has(output.keyImage));
+}
+
+/** Sum unspent outputs strictly below dust threshold (legacy `Wallet.dustAmount`). */
+export function getDustAmount(state: WalletState, dustThreshold?: number): number {
+  return getUnspentOutputs(state).reduce(
+    (sum, out) => (isDustOutput(out.amount, dustThreshold) ? sum + out.amount : sum),
+    0,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +480,7 @@ function validateTransaction(value: unknown, index: number): WalletTransaction {
   if (!isRecord(value)) {
     throw new Error(`Corrupt wallet state: transactions[${index}] is not an object.`);
   }
-  const { hash, height, amount, direction, timestamp } = value;
+  const { hash, height, amount, direction, timestamp, kind } = value;
   if (
     typeof hash !== "string" ||
     typeof height !== "number" ||
@@ -444,12 +489,24 @@ function validateTransaction(value: unknown, index: number): WalletTransaction {
   ) {
     throw new Error(`Corrupt wallet state: transactions[${index}] has invalid fields.`);
   }
+  if (
+    kind !== undefined &&
+    kind !== "receive" &&
+    kind !== "send" &&
+    kind !== "miner" &&
+    kind !== "deposit" &&
+    kind !== "withdrawal" &&
+    kind !== "fusion"
+  ) {
+    throw new Error(`Corrupt wallet state: transactions[${index}] has invalid kind.`);
+  }
   return {
     hash,
     height,
     amount,
     direction,
     ...(typeof timestamp === "number" ? { timestamp } : {}),
+    ...(typeof kind === "string" ? { kind } : {}),
   };
 }
 

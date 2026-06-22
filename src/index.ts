@@ -139,10 +139,12 @@ export type {
 export {
   applyScannedDeposits,
   applyScannedTransaction,
+  type ApplyScannedTransactionContext,
   type Balance,
   createWalletState,
   deserializeWalletState,
   getBalance,
+  getDustAmount,
   getLockedDeposits,
   getTransactions,
   getUnlockedDeposits,
@@ -152,3 +154,14 @@ export {
   type WalletState,
   type WalletTransaction,
 } from "./wallet";
+export {
+  classifyTransactionKind,
+  extractTxKindHints,
+  isCoinbaseRawTransaction,
+  isDustOutput,
+  isFusionShape,
+  resolveWalletTransactionKind,
+  type ClassifyTransactionKindInput,
+  type TxKindHints,
+  type WalletTransactionKind,
+} from "./transaction-kind";
