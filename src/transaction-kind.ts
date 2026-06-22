@@ -87,10 +87,7 @@ export function extractTxKindHints(transaction: unknown, fee = 0): TxKindHints {
       for (const out of vout) {
         if (!isRecord(out)) continue;
         const target = out.target;
-        if (
-          isRecord(target) &&
-          (target.type === "03" || target.type === "txout_to_deposit_key")
-        ) {
+        if (isRecord(target) && (target.type === "03" || target.type === "txout_to_deposit_key")) {
           hasDepositVout = true;
         }
       }
@@ -123,7 +120,9 @@ export function isFusionShape(hints: TxKindHints): boolean {
  * Classify a transaction the wallet touched during sync. Mirrors legacy
  * `resolveTransactionType` priority: deposit → withdrawal → fusion → miner → send/receive.
  */
-export function classifyTransactionKind(input: ClassifyTransactionKindInput): WalletTransactionKind {
+export function classifyTransactionKind(
+  input: ClassifyTransactionKindInput,
+): WalletTransactionKind {
   const ownedDeposits = input.ownedDeposits ?? [];
   const depositInputs = input.depositInputs ?? [];
 

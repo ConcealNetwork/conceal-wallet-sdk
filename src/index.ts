@@ -116,6 +116,17 @@ export {
   type SyncOptions,
   type WalletSync,
 } from "./sync";
+export {
+  type ClassifyTransactionKindInput,
+  classifyTransactionKind,
+  extractTxKindHints,
+  isCoinbaseRawTransaction,
+  isDustOutput,
+  isFusionShape,
+  resolveWalletTransactionKind,
+  type TxKindHints,
+  type WalletTransactionKind,
+} from "./transaction-kind";
 export type {
   BuildDepositTransactionInput,
   BuildMessageTransactionInput,
@@ -137,9 +148,9 @@ export type {
   WalletKeys,
 } from "./types";
 export {
+  type ApplyScannedTransactionContext,
   applyScannedDeposits,
   applyScannedTransaction,
-  type ApplyScannedTransactionContext,
   type Balance,
   createWalletState,
   deserializeWalletState,
@@ -154,14 +165,3 @@ export {
   type WalletState,
   type WalletTransaction,
 } from "./wallet";
-export {
-  classifyTransactionKind,
-  extractTxKindHints,
-  isCoinbaseRawTransaction,
-  isDustOutput,
-  isFusionShape,
-  resolveWalletTransactionKind,
-  type ClassifyTransactionKindInput,
-  type TxKindHints,
-  type WalletTransactionKind,
-} from "./transaction-kind";
