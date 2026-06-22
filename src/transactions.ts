@@ -22,16 +22,6 @@
  */
 import { transactions as ccxTransactions } from "conceal-lib-js";
 import {
-  ccxCrypto,
-  checkSignature,
-  cnutils,
-  derivePublicKey,
-  deriveSecretKey,
-  generateKeyDerivation,
-  generateKeyImage,
-  generateSignature,
-} from "./crypto";
-import {
   DEPOSIT_MAX_TERM_BLOCK,
   DEPOSIT_MIN_AMOUNT_ATOMIC,
   DEPOSIT_MIN_TERM_BLOCK,
@@ -49,6 +39,16 @@ import {
   TX_EXTRA_TTL,
 } from "./constants/message-const";
 import { DEPOSIT_SMALL_WITHDRAW_FEE, MESSAGE_TX_AMOUNT_ATOMIC } from "./constants/tx-const";
+import {
+  ccxCrypto,
+  checkSignature,
+  cnutils,
+  derivePublicKey,
+  deriveSecretKey,
+  generateKeyDerivation,
+  generateKeyImage,
+  generateSignature,
+} from "./crypto";
 import {
   deriveDepositOneTimeKey,
   type OwnedDeposit,

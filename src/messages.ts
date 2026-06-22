@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Conceal Network, Conceal Devs
 // SPDX-License-Identifier: MIT
 
+import { MAX_MESSAGE_BODY_BYTES, TX_EXTRA_MESSAGE_CHECKSUM_SIZE } from "./constants/message-const";
 /**
  * Conceal transaction-message encryption + the "smart message" protocol, ported
  * from `conceal-web-wallet` (`Cn` encrypt path / `TransactionsExplorer.decryptMessage`)
@@ -14,7 +15,6 @@
  * (encrypt === decrypt). A 4-byte zero checksum frames the plaintext.
  */
 import { ccxCrypto, cnutils, cypher } from "./crypto";
-import { MAX_MESSAGE_BODY_BYTES, TX_EXTRA_MESSAGE_CHECKSUM_SIZE } from "./constants/message-const";
 import type { Hex } from "./types";
 
 /** Magic bytes appended to the ECDH derivation before hashing into the ChaCha key. */

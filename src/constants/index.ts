@@ -4,8 +4,6 @@
 /** Chain / consensus scalars — single source of truth for the SDK and wallet apps. */
 
 export * from "./blockchain";
-export * from "./message-const";
-export * from "./tx-const";
 export {
   FUSION_TX_MAX_INPUT_COUNT,
   FUSION_TX_MAX_SIZE,
@@ -17,3 +15,5 @@ export {
   OPTIMIZE_THRESHOLD,
   PRETTY_AMOUNTS,
 } from "./fusion-const";
+export * from "./message-const";
+export * from "./tx-const";

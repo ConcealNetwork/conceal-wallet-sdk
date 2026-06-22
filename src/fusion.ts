@@ -26,7 +26,7 @@
  */
 import { UPGRADE_HEIGHT_V4 } from "./constants/blockchain";
 import * as fusionConst from "./constants/fusion-const";
-import { MINIMUM_FEE_V2, DEFAULT_MIXIN, DUST_THRESHOLD } from "./constants/tx-const";
+import { DEFAULT_MIXIN, DUST_THRESHOLD, MINIMUM_FEE_V2 } from "./constants/tx-const";
 import {
   type BuiltTransaction,
   buildTransaction,

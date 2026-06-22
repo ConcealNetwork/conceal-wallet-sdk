@@ -1,6 +1,22 @@
 // Copyright (c) 2026 Conceal Network, Conceal Devs
 // SPDX-License-Identifier: MIT
 
+import {
+  BLOCK_WITH_MISSING_INTEREST,
+  COIN_UNIT_PLACES,
+  DEPOSIT_HEIGHT_V3,
+  DEPOSIT_MAX_TERM,
+  DEPOSIT_MAX_TOTAL_RATE,
+  DEPOSIT_MIN_TERM,
+  DEPOSIT_MIN_TERM_V3,
+  DEPOSIT_MIN_TOTAL_RATE_FACTOR,
+  DEPOSIT_RATE_V3,
+  END_MULTIPLIER_BLOCK,
+  INVESTMENT_MQ,
+  MULTIPLIER_FACTOR,
+  WEEKLY_BASE_INTEREST,
+  WEEKLY_INTEREST_INCREMENT,
+} from "./constants/blockchain";
 /**
  * Deposits / banking (CryptoNote type-`03`).
  *
@@ -25,22 +41,6 @@
  * serializer; this module is the interest + scan + type half.
  */
 import { derivePublicKey, generateKeyDerivation } from "./crypto";
-import {
-  BLOCK_WITH_MISSING_INTEREST,
-  COIN_UNIT_PLACES,
-  DEPOSIT_HEIGHT_V3,
-  DEPOSIT_MAX_TERM,
-  DEPOSIT_MAX_TOTAL_RATE,
-  DEPOSIT_MIN_TERM,
-  DEPOSIT_MIN_TERM_V3,
-  DEPOSIT_MIN_TOTAL_RATE_FACTOR,
-  DEPOSIT_RATE_V3,
-  END_MULTIPLIER_BLOCK,
-  INVESTMENT_MQ,
-  MULTIPLIER_FACTOR,
-  WEEKLY_BASE_INTEREST,
-  WEEKLY_INTEREST_INCREMENT,
-} from "./constants/blockchain";
 import type { Hex, WalletKeys } from "./types";
 
 // ---------------------------------------------------------------------------
