@@ -28,12 +28,16 @@ import {
   DEPOSIT_TX_VERSION,
 } from "./constants/blockchain";
 import {
+  ENCRYPTED_PAYMENT_ID_TAIL,
+  INTEGRATED_PAYMENT_ID_BYTE_SIZE,
   MAX_CIPHERTEXT_BYTES,
   MAX_MESSAGE_BODY_BYTES,
   TX_EXTRA_MERGE_MINING_TAG,
   TX_EXTRA_MESSAGE_TAG,
   TX_EXTRA_MYSTERIOUS_MINERGATE_TAG,
   TX_EXTRA_NONCE,
+  TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID,
+  TX_EXTRA_NONCE_PAYMENT_ID,
   TX_EXTRA_TAG_PADDING,
   TX_EXTRA_TAG_PUBKEY,
   TX_EXTRA_TTL,
@@ -42,6 +46,7 @@ import { DEPOSIT_SMALL_WITHDRAW_FEE, MESSAGE_TX_AMOUNT_ATOMIC } from "./constant
 import {
   ccxCrypto,
   checkSignature,
+  cnFastHash,
   cnutils,
   derivePublicKey,
   deriveSecretKey,
@@ -1332,38 +1337,58 @@ export interface ScannedMessage {
   ttlUnixSeconds: number;
 }
 
-/**
- * Walk a tx `extra` hex and pull out the `0x04` encrypted-message payload and the
- * `0x05` TTL, returning `null` when no message record is present. The walk mirrors the
- * legacy `TransactionsExplorer.parseExtra` (`:129-179`): `0x01` is a fixed 32-byte
- * pubkey with no size byte; `0x02`/`0x03`/`0x04`/`0x05`/`0xde` carry a size byte; `0x00`
- * is padding (terminates the walk). TTL is decoded with the ported {@link decodeVarint}.
- */
-export function extractMessageFromExtra(extraHex: Hex): ScannedMessage | null {
+/** Payment id material parsed from `0x02` tx_extra nonce records (before decryption). */
+interface ParsedTxExtraPaymentIds {
+  plaintext: Hex | null;
+  encrypted: Hex | null;
+}
+
+/** Fields recovered by walking a tx `extra` hex string. */
+interface ParsedTxExtra {
+  message: ScannedMessage | null;
+  paymentIds: ParsedTxExtraPaymentIds;
+}
+
+function rawBytesToHex(data: number[]): Hex {
+  const raw = data.map((byte) => String.fromCharCode(byte)).join("");
+  return cnutils.bintohex(raw) as Hex;
+}
+
+/** Parse tx `extra` hex into bytes, or `null` when the input is not valid hex. */
+function parseExtraHexBytes(extraHex: Hex): number[] | null {
   if (
     typeof extraHex !== "string" ||
     extraHex.length === 0 ||
     extraHex.length % 2 !== 0 ||
     !/^[0-9a-fA-F]+$/.test(extraHex)
   ) {
-    // Reject non-hex / odd-length up front so malformed daemon data can't
-    // propagate NaN bytes into the parse (returns null, never throws).
     return null;
   }
   const bytes: number[] = [];
   for (let i = 0; i < extraHex.length; i += 2) {
     bytes.push(Number.parseInt(extraHex.slice(i, i + 2), 16));
   }
+  return bytes;
+}
+
+/**
+ * Walk a tx `extra` and collect message + payment-id nonce records. Mirrors the legacy
+ * `TransactionsExplorer.parseExtra` / scan loop (`wallet-core/TransactionsExplorer.ts`).
+ */
+function parseTxExtraRecords(extraHex: Hex): ParsedTxExtra | null {
+  const bytes = parseExtraHexBytes(extraHex);
+  if (bytes === null) return null;
 
   let ciphertextHex: Hex | null = null;
   let ttlUnixSeconds = 0;
+  let plaintextPaymentId: Hex | null = null;
+  let encryptedPaymentId: Hex | null = null;
   let offset = 0;
 
   while (offset < bytes.length) {
     const tag = bytes[offset] as number;
 
     if (tag === TX_EXTRA_TAG_PADDING) {
-      // Padding is a zero-run that runs to the end; nothing more to read.
       break;
     }
 
@@ -1382,25 +1407,27 @@ export function extractMessageFromExtra(extraHex: Hex): ScannedMessage | null {
       dataSize = bytes[offset + 1] as number;
       dataStart = offset + 2;
     } else {
-      // Unknown tag — stop rather than guess (matches the legacy bail-out).
       break;
     }
 
     const dataEnd = dataStart + dataSize;
     if (!Number.isInteger(dataSize) || dataEnd > bytes.length) {
-      // Truncated/corrupt record — stop the walk.
       break;
     }
     const data = bytes.slice(dataStart, dataEnd);
 
-    if (tag === TX_EXTRA_MESSAGE_TAG) {
-      // First message record wins (a CCX message tx carries exactly one).
+    if (tag === TX_EXTRA_NONCE && data.length > 0) {
+      const subTag = data[0] as number;
+      if (subTag === TX_EXTRA_NONCE_PAYMENT_ID) {
+        plaintextPaymentId = rawBytesToHex(data.slice(1));
+      } else if (subTag === TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID) {
+        encryptedPaymentId = rawBytesToHex(data.slice(1));
+      }
+    } else if (tag === TX_EXTRA_MESSAGE_TAG) {
       if (ciphertextHex === null) {
         ciphertextHex = data.map((byte) => byteToHex(byte)).join("") as Hex;
       }
     } else if (tag === TX_EXTRA_TTL && data.length > 0) {
-      // A corrupt TTL varint must not abort scanning — stop the walk and keep
-      // whatever was parsed so far rather than throwing.
       try {
         ttlUnixSeconds = decodeVarint(data);
       } catch {
@@ -1411,8 +1438,112 @@ export function extractMessageFromExtra(extraHex: Hex): ScannedMessage | null {
     offset = dataEnd;
   }
 
-  if (ciphertextHex === null) return null;
-  return { ciphertextHex, ttlUnixSeconds };
+  return {
+    message: ciphertextHex === null ? null : { ciphertextHex, ttlUnixSeconds },
+    paymentIds: { plaintext: plaintextPaymentId, encrypted: encryptedPaymentId },
+  };
+}
+
+/**
+ * Decrypt an 8-byte encrypted payment id from a tx `0x02` nonce record, using the tx
+ * public key `R` and the recipient's view secret. Mirrors `Cn.decrypt_payment_id`.
+ */
+export function decryptPaymentId(
+  encryptedPaymentIdHex: Hex,
+  txPublicKey: Hex,
+  viewSecretKey: Hex,
+): Hex {
+  const encryptedHexLength = INTEGRATED_PAYMENT_ID_BYTE_SIZE * 2;
+  if (encryptedPaymentIdHex.length !== encryptedHexLength) {
+    throw new Error("Invalid encrypted payment id length.");
+  }
+  if (!isHex32(txPublicKey) || !isHex32(viewSecretKey)) {
+    throw new Error("Invalid keys for payment id decryption.");
+  }
+  const keyDerivation = generateKeyDerivation(txPublicKey, viewSecretKey);
+  const pidKey = cnFastHash(`${keyDerivation}${ENCRYPTED_PAYMENT_ID_TAIL.toString(16)}`).slice(
+    0,
+    encryptedHexLength,
+  ) as Hex;
+  return cnutils.hex_xor(encryptedPaymentIdHex, pidKey) as Hex;
+}
+
+/**
+ * Encrypt an 8-byte integrated payment id for inclusion in tx `extra` (sender side).
+ * Mirrors legacy `Cn.ts` payment-id encryption before `add_nonce_to_extra`.
+ */
+export function encryptPaymentIdForExtra(
+  paymentId8Hex: Hex,
+  recipientViewPublicKey: Hex,
+  txSecretKey: Hex,
+): Hex {
+  const keyDerivation = generateKeyDerivation(recipientViewPublicKey, txSecretKey);
+  const pidKey = cnFastHash(`${keyDerivation}${ENCRYPTED_PAYMENT_ID_TAIL.toString(16)}`).slice(
+    0,
+    INTEGRATED_PAYMENT_ID_BYTE_SIZE * 2,
+  ) as Hex;
+  return cnutils.hex_xor(paymentId8Hex, pidKey) as Hex;
+}
+
+/**
+ * Encode a `0x02` tx_extra nonce record carrying a plaintext or encrypted payment id.
+ * Long-form (64 hex) ids are plaintext; 8-byte (16 hex) ids are encrypted to the recipient.
+ */
+export function encodePaymentIdNonceExtra(
+  paymentIdHex: Hex,
+  encrypt?: { recipientViewPublicKey: Hex; txSecretKey: Hex },
+): Hex {
+  const normalized = paymentIdHex.toLowerCase();
+  if (normalized.length !== INTEGRATED_PAYMENT_ID_BYTE_SIZE * 2 && normalized.length !== 64) {
+    throw new Error("Payment id must be 16 or 64 hex characters.");
+  }
+  let data: number[];
+  if (encrypt && normalized.length === INTEGRATED_PAYMENT_ID_BYTE_SIZE * 2) {
+    const encrypted = encryptPaymentIdForExtra(
+      normalized,
+      encrypt.recipientViewPublicKey,
+      encrypt.txSecretKey,
+    );
+    const encBytes = Array.from(cnutils.hextobin(encrypted) as Uint8Array);
+    data = [TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID, ...encBytes];
+  } else {
+    const pidBytes = Array.from(cnutils.hextobin(normalized) as Uint8Array);
+    data = [TX_EXTRA_NONCE_PAYMENT_ID, ...pidBytes];
+  }
+  return `02${byteToHex(data.length)}${data.map((byte) => byteToHex(byte)).join("")}` as Hex;
+}
+
+/**
+ * Extract a payment id from tx `extra`, decrypting an encrypted nonce when `decrypt` keys
+ * are supplied. Encrypted ids take precedence over plaintext (legacy scan order).
+ */
+export function extractPaymentIdFromExtra(
+  extraHex: Hex,
+  decrypt?: { txPublicKey: Hex; viewSecretKey: Hex },
+): Hex | null {
+  const parsed = parseTxExtraRecords(extraHex);
+  if (parsed === null) return null;
+
+  const { plaintext, encrypted } = parsed.paymentIds;
+  if (encrypted !== null && decrypt) {
+    try {
+      return decryptPaymentId(encrypted, decrypt.txPublicKey, decrypt.viewSecretKey);
+    } catch {
+      return plaintext;
+    }
+  }
+  return plaintext;
+}
+
+/**
+ * Walk a tx `extra` hex and pull out the `0x04` encrypted-message payload and the
+ * `0x05` TTL, returning `null` when no message record is present. The walk mirrors the
+ * legacy `TransactionsExplorer.parseExtra` (`:129-179`): `0x01` is a fixed 32-byte
+ * pubkey with no size byte; `0x02`/`0x03`/`0x04`/`0x05`/`0xde` carry a size byte; `0x00`
+ * is padding (terminates the walk). TTL is decoded with the ported {@link decodeVarint}.
+ */
+export function extractMessageFromExtra(extraHex: Hex): ScannedMessage | null {
+  return parseTxExtraRecords(extraHex)?.message ?? null;
 }
 
 /** Inputs to {@link buildMessageTransaction}. */
@@ -1441,6 +1572,8 @@ export interface BuildMessageTransactionInput {
   messageAmount?: number;
   /** Dust threshold; outputs at or below this are skipped during selection. */
   dustThreshold?: number;
+  /** Optional payment id written into tx `extra` (16- or 64-char hex). */
+  paymentId?: Hex;
 }
 
 /**
@@ -1507,10 +1640,23 @@ export function buildMessageTransaction(input: BuildMessageTransactionInput): Bu
     mixin: input.mixin,
     dustThreshold: input.dustThreshold,
     buildExtraRecords: ({ secretKey }) => {
+      let records = "";
+      const paymentId = input.paymentId?.trim().toLowerCase();
+      if (paymentId) {
+        const encrypt =
+          paymentId.length === INTEGRATED_PAYMENT_ID_BYTE_SIZE * 2
+            ? {
+                recipientViewPublicKey: input.recipient.viewPublicKey,
+                txSecretKey: secretKey,
+              }
+            : undefined;
+        records += encodePaymentIdNonceExtra(paymentId as Hex, encrypt);
+      }
       const key = deriveMessageKey(input.recipient.spendPublicKey, secretKey);
       const ciphertextHex = encryptMessage(input.body, key, 0);
       const messageRecord = encodeMessageExtra(ciphertextHex);
-      return (hasTtl ? `${messageRecord}${encodeTtlExtra(ttlUnixSeconds)}` : messageRecord) as Hex;
+      records += hasTtl ? `${messageRecord}${encodeTtlExtra(ttlUnixSeconds)}` : messageRecord;
+      return records as Hex;
     },
   });
 
@@ -1533,12 +1679,23 @@ export function buildMessageTransaction(input: BuildMessageTransactionInput): Bu
 export function readMessageFromTransaction(
   tx: RawTransaction,
   keys: WalletKeys,
-): { body: string | null; ttlUnixSeconds: number; owned: OwnedOutput[] } | null {
+): {
+  body: string | null;
+  ttlUnixSeconds: number;
+  owned: OwnedOutput[];
+  paymentId: Hex | null;
+} | null {
   const message = extractMessageFromExtra(tx.extra);
   if (message === null) return null;
 
   const txPublicKey = extractTransactionPublicKey(tx.extra);
   const owned = scanTransactionOutputs(tx, keys);
+  const paymentId = extractPaymentIdFromExtra(
+    tx.extra,
+    txPublicKey !== null && isHex32(keys.view?.sec)
+      ? { txPublicKey, viewSecretKey: keys.view.sec }
+      : undefined,
+  );
 
   let body: string | null = null;
   if (txPublicKey !== null && isHex32(keys.spend?.sec)) {
@@ -1552,5 +1709,5 @@ export function readMessageFromTransaction(
     }
   }
 
-  return { body, ttlUnixSeconds: message.ttlUnixSeconds, owned };
+  return { body, ttlUnixSeconds: message.ttlUnixSeconds, owned, paymentId };
 }
