@@ -1,6 +1,12 @@
 import { crypto as ccxCrypto, transactions as ccxTransactions } from "conceal-lib-js";
 import { describe, expect, it } from "vitest";
 import { createAccount } from "../src/account";
+import {
+  MAX_CIPHERTEXT_BYTES,
+  MAX_MESSAGE_BODY_BYTES,
+  MESSAGE_TX_AMOUNT_ATOMIC,
+  REMOTE_NODE_FEE_ATOMIC,
+} from "../src/constants";
 import { decryptMessage, deriveMessageKey, encodeSmartMessage } from "../src/messages";
 import {
   type BuildMessageTransactionInput,
@@ -9,11 +15,7 @@ import {
   encodeMessageExtra,
   encodeTtlExtra,
   extractMessageFromExtra,
-  MAX_CIPHERTEXT_BYTES,
-  MAX_MESSAGE_BODY_BYTES,
-  MESSAGE_TX_AMOUNT_ATOMIC,
   type RawTransaction,
-  REMOTE_NODE_FEE_ATOMIC,
   readMessageFromTransaction,
   type ScanKeys,
   type SpendableOutput,

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * CCX address validation/decoding and payment-URI (CoinUri) codec. Wraps
  * lib-js's loosely-typed `decode_address` and builds/parses the bare-address

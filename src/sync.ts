@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Wallet SYNC orchestration — drives a {@link WalletState} forward from daemon
  * data, persisting to a {@link StorageAdapter} as it goes.
@@ -160,6 +163,12 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
         { hash: scanTx.hash, height: scanTx.height, timestamp: rawTx.timestamp },
         ownedOutputs,
         inputKeyImages,
+        {
+          ownedDeposits,
+          depositInputs,
+          rawTransaction: rawTx.transaction,
+          fee: rawTx.fee,
+        },
       );
 
       // Add owned deposits and mark any withdrawn deposit spent (mirrors the legacy

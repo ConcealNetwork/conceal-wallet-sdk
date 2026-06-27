@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
+import { MAX_MESSAGE_BODY_BYTES, TX_EXTRA_MESSAGE_CHECKSUM_SIZE } from "./constants/message-const";
 /**
  * Conceal transaction-message encryption + the "smart message" protocol, ported
  * from `conceal-web-wallet` (`Cn` encrypt path / `TransactionsExplorer.decryptMessage`)
@@ -13,17 +17,11 @@
 import { ccxCrypto, cnutils, cypher } from "./crypto";
 import type { Hex } from "./types";
 
-/** Trailing zero bytes appended to plaintext before encryption; verified on decrypt. */
-const TX_EXTRA_MESSAGE_CHECKSUM_SIZE = 4;
 /** Magic bytes appended to the ECDH derivation before hashing into the ChaCha key. */
 const KEY_MAGIC_1 = "80";
 const KEY_MAGIC_2 = "00";
 /** Nonce width in bytes (big-endian message index). */
 const NONCE_SIZE = 12;
-/** On-chain the encrypted-message length is a single byte → 255-byte ciphertext cap. */
-const MAX_CIPHERTEXT_BYTES = 255;
-/** Max UTF-8 body bytes (ciphertext cap minus the 4-byte checksum). */
-const MAX_BODY_BYTES = MAX_CIPHERTEXT_BYTES - TX_EXTRA_MESSAGE_CHECKSUM_SIZE;
 
 const PREFIX = "{";
 const SUFFIX = "}";
@@ -111,8 +109,10 @@ function frameBody(body: string): Uint8Array {
  */
 export function encryptMessage(body: string, keyHex: Hex, index = 0): Hex {
   const bodyBytes = new TextEncoder().encode(body).length;
-  if (bodyBytes > MAX_BODY_BYTES) {
-    throw new Error(`Message body too long: ${bodyBytes} UTF-8 bytes (max ${MAX_BODY_BYTES}).`);
+  if (bodyBytes > MAX_MESSAGE_BODY_BYTES) {
+    throw new Error(
+      `Message body too long: ${bodyBytes} UTF-8 bytes (max ${MAX_MESSAGE_BODY_BYTES}).`,
+    );
   }
 
   const keyBuf = cnutils.hextobin(keyHex);

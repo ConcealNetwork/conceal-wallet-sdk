@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Typed facade over conceal-lib-js cryptographic primitives. This is the single
  * module that touches lib-js's loosely-typed (`any`) surface; everything else in

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Durable outbound transaction queue — a crash-safe relay buffer between tx
  * construction ({@link ./transactions.buildTransaction}) and broadcast

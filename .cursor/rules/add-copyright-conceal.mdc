@@ -1,0 +1,28 @@
+---
+description: Add Conceal copyright header when user invokes /add-copyright-conceal
+alwaysApply: false
+---
+
+# /add-copyright-conceal
+
+When the user asks to add copyright (e.g. `/add-copyright-conceal`, `@add-copyright-conceal`, or "add Conceal copyright to this file"):
+
+1. **Target** — the file they named or have open. If unclear, ask once.
+2. **Skip** if the file already contains `Copyright` or `SPDX-License-Identifier` in the first 30 lines.
+3. **Header** — insert the short two-line header matching [LICENSE](LICENSE) (year = current calendar year). Do not replace an existing copyright block if present.
+
+```typescript
+// Copyright (c) <YEAR> Conceal Network
+// SPDX-License-Identifier: MIT
+```
+
+4. **Placement** — keep any leading directives on line 1, then the header, then a blank line, then the rest:
+   - `#!/usr/bin/env …` (scripts)
+   - `// @ts-nocheck`
+5. **Prefer the script** when a path is known:
+
+```bash
+node scripts/add-copyright-conceal.mjs <path>
+```
+
+6. **Do not** add headers to generated/vendor files: `dist/**`, `node_modules/**`, `coverage/**`, `package-lock.json`, `*.lock`, `*.svg`, `*.png`, `*.ico`, `*.wasm`, `*.map`.

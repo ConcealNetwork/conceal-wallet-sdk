@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Conceal Network, Conceal Devs
+// SPDX-License-Identifier: MIT
+
 /**
  * Seed-phrase helpers — a typed facade over conceal-lib-js `mnemonic`
  * (env-agnostic entropy via the SDK's `randomSeed`, not lib-js's browser-only
