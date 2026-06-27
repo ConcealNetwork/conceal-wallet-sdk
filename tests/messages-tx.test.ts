@@ -2,19 +2,26 @@ import { crypto as ccxCrypto, transactions as ccxTransactions } from "conceal-li
 import { describe, expect, it } from "vitest";
 import { createAccount } from "../src/account";
 import {
+  ENCRYPTED_PAYMENT_ID_TAIL,
+  INTEGRATED_PAYMENT_ID_BYTE_SIZE,
   MAX_CIPHERTEXT_BYTES,
   MAX_MESSAGE_BODY_BYTES,
   MESSAGE_TX_AMOUNT_ATOMIC,
   REMOTE_NODE_FEE_ATOMIC,
+  TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID,
+  TX_EXTRA_NONCE_PAYMENT_ID,
 } from "../src/constants";
+import { cnFastHash, cnutils, generateKeyDerivation } from "../src/crypto";
 import { decryptMessage, deriveMessageKey, encodeSmartMessage } from "../src/messages";
 import {
   type BuildMessageTransactionInput,
   buildMessageTransaction,
   buildTransaction,
+  decryptPaymentId,
   encodeMessageExtra,
   encodeTtlExtra,
   extractMessageFromExtra,
+  extractPaymentIdFromExtra,
   type RawTransaction,
   readMessageFromTransaction,
   type ScanKeys,
@@ -432,5 +439,94 @@ describe("extractMessageFromExtra / readMessageFromTransaction — malformed inp
     expect(() => build(() => "abc")).toThrow(/hex/i); // odd length
     // A valid even-length hex record is accepted.
     expect(() => build(() => "0401aa")).not.toThrow();
+  });
+});
+
+// --- payment id extraction --------------------------------------------------
+
+function byteToHex(value: number): string {
+  return `0${value.toString(16)}`.slice(-2);
+}
+
+/** Legacy `0x02` nonce record carrying a plaintext payment id (long-form PID). */
+function encodePlaintextPaymentIdNonce(paymentIdHex: string): string {
+  const pidBytes = Array.from(cnutils.hextobin(paymentIdHex) as Uint8Array);
+  const data = [TX_EXTRA_NONCE_PAYMENT_ID, ...pidBytes];
+  return `02${byteToHex(data.length)}${data.map((byte) => byteToHex(byte)).join("")}`;
+}
+
+/** Encrypt an 8-byte integrated payment id for a tx extra nonce (sender side). */
+function encryptPaymentIdForExtra(
+  paymentId8Hex: string,
+  recipientViewPublicKey: string,
+  txSecretKey: string,
+): string {
+  const keyDerivation = generateKeyDerivation(recipientViewPublicKey, txSecretKey);
+  const pidKey = cnFastHash(`${keyDerivation}${ENCRYPTED_PAYMENT_ID_TAIL.toString(16)}`).slice(
+    0,
+    INTEGRATED_PAYMENT_ID_BYTE_SIZE * 2,
+  );
+  return cnutils.hex_xor(paymentId8Hex, pidKey);
+}
+
+function encodeEncryptedPaymentIdNonce(encryptedPaymentId8Hex: string): string {
+  const pidBytes = Array.from(cnutils.hextobin(encryptedPaymentId8Hex) as Uint8Array);
+  const data = [TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID, ...pidBytes];
+  return `02${byteToHex(data.length)}${data.map((byte) => byteToHex(byte)).join("")}`;
+}
+
+describe("extractPaymentIdFromExtra / readMessageFromTransaction — payment id", () => {
+  const LONG_PID = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7ef099";
+  const SHORT_PID = "a1b2c3d4e5f60718";
+
+  it("extracts a plaintext long-form payment id from a 0x02 nonce record", () => {
+    const R = "ab".repeat(32);
+    const extra = `${encodePlaintextPaymentIdNonce(LONG_PID)}01${R}${encodeMessageExtra("cc".repeat(8))}`;
+    expect(extractPaymentIdFromExtra(extra)).toBe(LONG_PID);
+  });
+
+  it("decrypts an encrypted 8-byte payment id with the recipient view secret", () => {
+    const body = "pid-tagged message";
+    const built = buildMessageTransaction({ ...baseInput({ body }), keys: builderKeys() });
+    const encrypted = encryptPaymentIdForExtra(SHORT_PID, B.keys.view.pub, built.txSecretKey);
+    const nonce = encodeEncryptedPaymentIdNonce(encrypted);
+    const extra = `${nonce}${recoverExtra(built)}`;
+    const rawTx: RawTransaction = {
+      extra,
+      vout: built.outputs.map((o) => ({
+        amount: o.amount,
+        target: { type: "02", data: { key: o.publicKey } },
+      })),
+    };
+
+    expect(
+      extractPaymentIdFromExtra(extra, {
+        txPublicKey: built.txPublicKey,
+        viewSecretKey: B.keys.view.sec,
+      }),
+    ).toBe(SHORT_PID);
+
+    const read = readMessageFromTransaction(rawTx, B.keys);
+    expect(read?.body).toBe(body);
+    expect(read?.paymentId).toBe(SHORT_PID);
+  });
+
+  it("prefers encrypted payment id over plaintext when both are present", () => {
+    const txSecret = txKeypair("e5");
+    const R = txSecret.pub;
+    const encrypted = encryptPaymentIdForExtra(SHORT_PID, B.keys.view.pub, txSecret.sec);
+    const extra = `${encodePlaintextPaymentIdNonce(LONG_PID)}${encodeEncryptedPaymentIdNonce(encrypted)}01${R}`;
+    expect(
+      extractPaymentIdFromExtra(extra, {
+        txPublicKey: R,
+        viewSecretKey: B.keys.view.sec,
+      }),
+    ).toBe(SHORT_PID);
+    expect(decryptPaymentId(encrypted, R, B.keys.view.sec)).toBe(SHORT_PID);
+  });
+
+  it("returns null when extra carries no payment id nonce", () => {
+    const built = buildMessageTransaction({ ...baseInput(), keys: builderKeys() });
+    expect(extractPaymentIdFromExtra(recoverExtra(built))).toBeNull();
   });
 });

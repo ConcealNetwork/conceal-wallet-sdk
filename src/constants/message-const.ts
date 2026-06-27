@@ -25,6 +25,11 @@ export const TX_EXTRA_NONCE_PAYMENT_ID = 0x00;
 /** Nonce sub-tag (first byte of a `0x02` record's data) — encrypted payment id. */
 export const TX_EXTRA_NONCE_ENCRYPTED_PAYMENT_ID = 0x01;
 
+/** Integrated / encrypted payment id length in bytes (16 hex chars on-chain). */
+export const INTEGRATED_PAYMENT_ID_BYTE_SIZE = 8;
+/** Magic byte appended when hashing the ECDH derivation to decrypt an encrypted payment id. */
+export const ENCRYPTED_PAYMENT_ID_TAIL = 141;
+
 /** Trailing zero bytes in the encrypted-message plaintext frame. */
 export const TX_EXTRA_MESSAGE_CHECKSUM_SIZE = 4;
 /** Single-byte length-field cap: the encrypted message can be at most 255 bytes. */
