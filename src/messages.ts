@@ -60,6 +60,7 @@ export const ACTION_MAP: Readonly<Record<string, string>> = {
   register: "r",
   verify: "v",
   revoke: "k",
+  ok: "alive",
 };
 
 /**
