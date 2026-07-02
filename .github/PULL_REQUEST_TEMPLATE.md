@@ -12,10 +12,10 @@
 
 - [ ] `npm run types`
 - [ ] `npm run check`
-- [ ] `npm test`
+- [ ] `npm run test`
 - [ ] `npm run build`
 
 ## Test plan
 
-- [ ] `npm test`
+- [ ] `npm run test`
 <!-- How was this verified? (e.g. vitest, manual steps, live daemon broadcast) -->

@@ -109,6 +109,8 @@ export {
   type OutboundQueueResult,
   type OutboundQueueState,
 } from "./outbound-queue";
+/** `{status,<kind>,…}` Pulse / check-in encode-decode. */
+export * as smartPulse from "./smart-pulse";
 export {
   createWalletSync,
   DEFAULT_BATCH_SIZE,
