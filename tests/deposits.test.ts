@@ -9,7 +9,10 @@ import {
 } from "../src/constants";
 import {
   calculateDepositInterest,
+  depRef,
   findWithdrawnDepositIndexes,
+  findWithdrawnDepRefs,
+  isWithdrawShape,
   type OwnedDeposit,
 } from "../src/deposits";
 import {
@@ -537,7 +540,13 @@ describe("buildDepositTransaction — constraints", () => {
 describe("deposit scan + wallet state", () => {
   const wallet = createAccount();
 
-  function depositTx(amount: number, term: number, globalIndex: number, height: number) {
+  function depositTx(
+    amount: number,
+    term: number,
+    globalIndex: number,
+    height: number,
+    hash = "11".repeat(32),
+  ) {
     const tx = ccxCrypto.generate_keys(ccxCrypto.sc_reduce32("33".repeat(32)));
     const derivation = ccxCrypto.generate_key_derivation(wallet.keys.view.pub, tx.sec);
     const depositKey = ccxCrypto.derive_public_key(derivation, 0, wallet.keys.spend.pub);
@@ -553,7 +562,7 @@ describe("deposit scan + wallet state", () => {
         },
       ],
       outputIndexes: [globalIndex],
-      hash: "11".repeat(32),
+      hash,
       height,
     };
     return { rawTx, depositKey };
@@ -583,12 +592,17 @@ describe("deposit scan + wallet state", () => {
     let state = createWalletState({ address: wallet.address, keys: wallet.keys });
     state = applyScannedDeposits(state, deposits);
 
-    const withdrawInputs = [{ type: "input_to_deposit_key", outputIndex: 777, term: 21900 }];
-    const withdrawn = findWithdrawnDepositIndexes(withdrawInputs, state.deposits);
-    expect(withdrawn).toEqual([777]);
+    const withdrawInputs = [
+      { type: "input_to_deposit_key", outputIndex: 777, term: 21900, amount: 1e10 },
+    ];
+    const deposit = state.deposits[0];
+    expect(deposit).toBeDefined();
+    if (deposit === undefined) return;
+    const withdrawn = findWithdrawnDepRefs(withdrawInputs, state.deposits);
+    expect(withdrawn).toEqual([depRef(deposit)]);
 
     state = applyScannedDeposits(state, [], withdrawn);
-    expect(state.spentDepositIndexes).toEqual([777]);
+    expect(state.spentDepositRefs).toEqual([depRef(deposit)]);
   });
 
   it("another user's unlock (non-owned global index) does not mark our deposit spent", () => {
@@ -598,10 +612,67 @@ describe("deposit scan + wallet state", () => {
       view: wallet.keys.view,
     });
     const withdrawn = findWithdrawnDepositIndexes(
-      [{ type: "input_to_deposit_key", outputIndex: 999999, term: 21900 }],
+      [{ type: "input_to_deposit_key", outputIndex: 999999, term: 21900, amount: 1e10 }],
       deposits,
     );
     expect(withdrawn).toEqual([]);
+  });
+
+  it("index match without principal amount does not mark spent", () => {
+    const { rawTx } = depositTx(1e10, 21900, 777, 413401);
+    const { deposits } = scanTransactionOutputsAndDeposits(rawTx, {
+      spend: wallet.keys.spend,
+      view: wallet.keys.view,
+    });
+    const withdrawn = findWithdrawnDepositIndexes(
+      [{ type: "input_to_deposit_key", outputIndex: 777, term: 21900 }],
+      deposits,
+    );
+    expect(withdrawn).toEqual([]);
+  });
+
+  it("wrong principal amount does not mark spent even when index matches", () => {
+    const { rawTx } = depositTx(1e10, 21900, 777, 413401);
+    const { deposits } = scanTransactionOutputsAndDeposits(rawTx, {
+      spend: wallet.keys.spend,
+      view: wallet.keys.view,
+    });
+    const withdrawn = findWithdrawnDepositIndexes(
+      [{ type: "input_to_deposit_key", outputIndex: 777, term: 21900, amount: 1e10 - 1 }],
+      deposits,
+    );
+    expect(withdrawn).toEqual([]);
+  });
+
+  it("globalIndex falls back to 0 when output_indexes missing (wallet-core)", () => {
+    const tx = ccxCrypto.generate_keys(ccxCrypto.sc_reduce32("44".repeat(32)));
+    const derivation = ccxCrypto.generate_key_derivation(wallet.keys.view.pub, tx.sec);
+    const depositKey = ccxCrypto.derive_public_key(derivation, 0, wallet.keys.spend.pub);
+    const rawTx: RawTransaction = {
+      extra: `01${tx.pub}`,
+      vout: [
+        {
+          amount: 1e10,
+          target: {
+            type: "03",
+            data: { keys: [depositKey], required_signatures: 1, term: 21900 },
+          },
+        },
+      ],
+      hash: "22".repeat(32),
+      height: 413401,
+    };
+    const { deposits } = scanTransactionOutputsAndDeposits(rawTx, {
+      spend: wallet.keys.spend,
+      view: wallet.keys.view,
+    });
+    expect(deposits[0]?.globalIndex).toBe(0);
+  });
+
+  it("isWithdrawShape requires vout total > vin principal", () => {
+    const inputs = [{ type: "input_to_deposit_key", outputIndex: 1, term: 21900, amount: 100 }];
+    expect(isWithdrawShape({ vout: [{ amount: 50 }] }, inputs)).toBe(false);
+    expect(isWithdrawShape({ vout: [{ amount: 50 }, { amount: 100 }] }, inputs)).toBe(true);
   });
 
   it("locked/unlocked getters partition by height", () => {
@@ -622,9 +693,37 @@ describe("deposit scan + wallet state", () => {
     expect(getUnlockedDeposits(state, unlockHeight)).toHaveLength(1);
 
     // Once withdrawn, a deposit is neither locked nor unlocked.
-    state = applyScannedDeposits(state, [], [1234]);
+    const deposit = deposits[0];
+    expect(deposit).toBeDefined();
+    if (deposit === undefined) return;
+    const ref = depRef(deposit);
+    state = applyScannedDeposits(state, [], [ref]);
     expect(getUnlockedDeposits(state, unlockHeight)).toHaveLength(0);
     expect(getLockedDeposits(state, unlockHeight)).toHaveLength(0);
+  });
+
+  it("keeps multiple deposits that share globalIndex 0 (wallet-core txHash identity)", () => {
+    const { rawTx: rawA, depositKey: keyA } = depositTx(1e10, 21900, 0, 413401, "aa".repeat(32));
+    const { rawTx: rawB, depositKey: keyB } = depositTx(2e10, 21900, 0, 414401, "bb".repeat(32));
+    expect(keyA).toBeTruthy();
+    expect(keyB).toBeTruthy();
+
+    const scanA = scanTransactionOutputsAndDeposits(rawA, {
+      spend: wallet.keys.spend,
+      view: wallet.keys.view,
+    });
+    const scanB = scanTransactionOutputsAndDeposits(rawB, {
+      spend: wallet.keys.spend,
+      view: wallet.keys.view,
+    });
+
+    let state = createWalletState({ address: wallet.address, keys: wallet.keys });
+    state = applyScannedDeposits(state, scanA.deposits);
+    state = applyScannedDeposits(state, scanB.deposits);
+    expect(state.deposits).toHaveLength(2);
+    expect(state.deposits.map((d) => d.txHash).sort()).toEqual(
+      ["aa".repeat(32), "bb".repeat(32)].sort(),
+    );
   });
 });
 
@@ -646,7 +745,37 @@ describe("WalletState v1 → v2 deserialize", () => {
     });
     const state = deserializeWalletState(v1Blob);
     expect(state.deposits).toEqual([]);
-    expect(state.spentDepositIndexes).toEqual([]);
+    expect(state.spentDepositRefs).toEqual([]);
+  });
+
+  it("v2 blob with spentDepositIndexes upgrades to spentDepositRefs on read", () => {
+    const deposit: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 777,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 21900,
+      blockHeight: 413401,
+      txHash: "ef".repeat(32),
+      interest: 32_500_000,
+      unlockHeight: 413401 + 21900,
+    };
+    const v2Blob = JSON.stringify({
+      version: 2,
+      state: {
+        address: "ccx7test",
+        scannedHeight: 100,
+        outputs: [],
+        spentKeyImages: [],
+        transactions: [],
+        deposits: [deposit],
+        spentDepositIndexes: [777],
+      },
+    });
+    const state = deserializeWalletState(v2Blob);
+    expect(state.spentDepositRefs).toEqual([depRef(deposit)]);
   });
 
   it("round-trips a v2 state with deposits", () => {

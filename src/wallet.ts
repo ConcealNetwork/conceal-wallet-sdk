@@ -15,7 +15,7 @@
  * output is one whose key image has appeared in some transaction's inputs.
  */
 import type { Account } from "./account";
-import type { OwnedDeposit, RawDepositInput } from "./deposits";
+import { depRef, type OwnedDeposit, type RawDepositInput } from "./deposits";
 import {
   classifyTransactionKind,
   isDustOutput,
@@ -77,16 +77,19 @@ export interface WalletState {
    * withdrawn (mirrors the legacy `Wallet.deposits` collection).
    */
   deposits: OwnedDeposit[];
-  /** Global output indexes of deposits that have been withdrawn (spent). */
-  spentDepositIndexes: number[];
+  /**
+   * Deposit refs (`txHash:globalIndex`) that have been withdrawn — wallet-core
+   * `Deposit.spentTx` parity without mutating each {@link OwnedDeposit}.
+   */
+  spentDepositRefs: string[];
 }
 
 /**
- * Current on-disk schema version for serialized {@link WalletState}. Bumped to `2`
- * when deposits/banking state (`deposits`, `spentDepositIndexes`) was added; a v1 blob
- * has no deposit fields and is upgraded on read by defaulting them to `[]`.
+ * Current on-disk schema version for serialized {@link WalletState}. v2 added
+ * deposits; v3 replaces global-index-only `spentDepositIndexes` with per-deposit
+ * `spentDepositRefs` and dedupes deposits by `txHash` (wallet-core `addDeposit`).
  */
-export const WALLET_STATE_VERSION = 2;
+export const WALLET_STATE_VERSION = 3;
 
 /** Create a fresh, empty {@link WalletState} for `account` (nothing scanned yet). */
 export function createWalletState(account: Account): WalletState {
@@ -100,7 +103,7 @@ export function createWalletState(account: Account): WalletState {
     spentKeyImages: [],
     transactions: [],
     deposits: [],
-    spentDepositIndexes: [],
+    spentDepositRefs: [],
   };
 }
 
@@ -240,9 +243,9 @@ export function getDustAmount(state: WalletState, dustThreshold?: number): numbe
 /**
  * Merge scanned deposits into the wallet state and mark any withdrawn deposits spent,
  * returning a NEW state (inputs are never mutated):
- *  - add newly-owned deposits, de-duped by global output index;
- *  - record `withdrawnGlobalIndexes` (from {@link ../deposits.findWithdrawnDepositIndexes})
- *    as spent in `spentDepositIndexes`.
+ *  - add newly-owned deposits, de-duped by `txHash` (wallet-core `Wallet.addDeposit`);
+ *  - record `withdrawnRefs` (from {@link ../deposits.findWithdrawnDepRefs}) in
+ *    `spentDepositRefs`.
  *
  * Deposit principal stays OUT of {@link getBalance} spendable — it lives only in
  * `deposits` until a withdraw redeems it (the redeem output then scans in as an
@@ -251,37 +254,38 @@ export function getDustAmount(state: WalletState, dustThreshold?: number): numbe
 export function applyScannedDeposits(
   state: WalletState,
   ownedDeposits: readonly OwnedDeposit[],
-  withdrawnGlobalIndexes: readonly number[] = [],
+  withdrawnRefs: readonly string[] = [],
 ): WalletState {
-  const existingIndexes = new Set(state.deposits.map((d) => d.globalIndex));
-  const addedDeposits: OwnedDeposit[] = [];
+  let depositsChanged = false;
+  const nextDeposits = [...state.deposits];
   for (const deposit of ownedDeposits) {
-    if (!existingIndexes.has(deposit.globalIndex)) {
-      existingIndexes.add(deposit.globalIndex);
-      addedDeposits.push(deposit);
+    const idx = nextDeposits.findIndex((entry) => entry.txHash === deposit.txHash);
+    if (idx >= 0) {
+      if (nextDeposits[idx] !== deposit) {
+        nextDeposits[idx] = deposit;
+        depositsChanged = true;
+      }
+    } else {
+      nextDeposits.push(deposit);
+      depositsChanged = true;
     }
   }
-  const nextDeposits =
-    addedDeposits.length > 0 ? [...state.deposits, ...addedDeposits] : state.deposits;
 
-  const alreadySpent = new Set(state.spentDepositIndexes);
-  const ownedGlobalIndexes = new Set(nextDeposits.map((d) => d.globalIndex));
-  const newlySpent: number[] = [];
-  for (const globalIndex of withdrawnGlobalIndexes) {
-    if (ownedGlobalIndexes.has(globalIndex) && !alreadySpent.has(globalIndex)) {
-      alreadySpent.add(globalIndex);
-      newlySpent.push(globalIndex);
+  const spent = new Set(state.spentDepositRefs);
+  const newlySpent: string[] = [];
+  for (const ref of withdrawnRefs) {
+    if (nextDeposits.some((d) => depRef(d) === ref) && !spent.has(ref)) {
+      spent.add(ref);
+      newlySpent.push(ref);
     }
   }
-  const nextSpentDepositIndexes =
-    newlySpent.length > 0
-      ? [...state.spentDepositIndexes, ...newlySpent]
-      : state.spentDepositIndexes;
+  const nextSpentDepositRefs =
+    newlySpent.length > 0 ? [...state.spentDepositRefs, ...newlySpent] : state.spentDepositRefs;
 
-  if (nextDeposits === state.deposits && nextSpentDepositIndexes === state.spentDepositIndexes) {
+  if (!depositsChanged && nextSpentDepositRefs === state.spentDepositRefs) {
     return state;
   }
-  return { ...state, deposits: nextDeposits, spentDepositIndexes: nextSpentDepositIndexes };
+  return { ...state, deposits: nextDeposits, spentDepositRefs: nextSpentDepositRefs };
 }
 
 /**
@@ -289,20 +293,18 @@ export function applyScannedDeposits(
  * legacy `Wallet.lockedDeposits`), excluding any already withdrawn.
  */
 export function getLockedDeposits(state: WalletState, height: number): OwnedDeposit[] {
-  const spent = new Set(state.spentDepositIndexes);
-  return state.deposits.filter((d) => !spent.has(d.globalIndex) && d.blockHeight + d.term > height);
+  const spent = new Set(state.spentDepositRefs);
+  return state.deposits.filter((d) => !spent.has(depRef(d)) && d.blockHeight + d.term > height);
 }
 
 /**
  * Deposits unlocked and not yet withdrawn at `height` — `blockHeight + term <= height`
- * and not in `spentDepositIndexes` (matching legacy `Wallet.unlockedDeposits`). These
+ * and not in `spentDepositRefs` (matching legacy `Wallet.unlockedDeposits`). These
  * are the deposits a withdraw can redeem.
  */
 export function getUnlockedDeposits(state: WalletState, height: number): OwnedDeposit[] {
-  const spent = new Set(state.spentDepositIndexes);
-  return state.deposits.filter(
-    (d) => !spent.has(d.globalIndex) && d.blockHeight + d.term <= height,
-  );
+  const spent = new Set(state.spentDepositRefs);
+  return state.deposits.filter((d) => !spent.has(depRef(d)) && d.blockHeight + d.term <= height);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,11 +351,61 @@ export function deserializeWalletState(json: string): WalletState {
       `Unsupported wallet state version: ${String(parsed.version)} (expected 1..${WALLET_STATE_VERSION}).`,
     );
   }
-  return validateWalletState(parsed.state);
+  return normalizeWalletState(parsed.state, parsed.version);
+}
+
+/** Wallet-core `addDeposit` keeps one entry per creation `txHash`. */
+function dedupeDepositsByTx(deposits: readonly OwnedDeposit[]): OwnedDeposit[] {
+  const byTx = new Map<string, OwnedDeposit>();
+  for (const deposit of deposits) {
+    if (deposit.txHash) byTx.set(deposit.txHash, deposit);
+  }
+  return [...byTx.values()];
+}
+
+/** Best-effort v2 `spentDepositIndexes` → v3 `spentDepositRefs`. */
+function migrateSpentRefs(
+  deposits: readonly OwnedDeposit[],
+  spentDepositIndexes: readonly number[],
+): string[] {
+  const refs: string[] = [];
+  const used = new Set<string>();
+  for (const globalIndex of spentDepositIndexes) {
+    const deposit = deposits.find((d) => d.globalIndex === globalIndex && !used.has(depRef(d)));
+    if (!deposit) continue;
+    const ref = depRef(deposit);
+    refs.push(ref);
+    used.add(ref);
+  }
+  return refs;
+}
+
+function normalizeWalletState(value: unknown, version: number): WalletState {
+  const validated = validateWalletStatePayload(value, version);
+  const deposits = dedupeDepositsByTx(validated.deposits);
+  const spentDepositRefs =
+    version >= 3
+      ? validated.spentDepositRefs
+      : migrateSpentRefs(deposits, validated.spentDepositIndexes);
+  return {
+    address: validated.address,
+    scannedHeight: validated.scannedHeight,
+    outputs: validated.outputs,
+    spentKeyImages: validated.spentKeyImages,
+    transactions: validated.transactions,
+    deposits,
+    spentDepositRefs,
+  };
 }
 
 /** Narrow + validate a candidate state object, throwing on any shape violation. */
-function validateWalletState(value: unknown): WalletState {
+function validateWalletStatePayload(
+  value: unknown,
+  version: number,
+): Omit<WalletState, "spentDepositRefs"> & {
+  spentDepositRefs: string[];
+  spentDepositIndexes: number[];
+} {
   if (!isRecord(value)) {
     throw new Error("Corrupt wallet state: state is not an object.");
   }
@@ -378,7 +430,14 @@ function validateWalletState(value: unknown): WalletState {
   if (value.deposits !== undefined && !Array.isArray(value.deposits)) {
     throw new Error("Corrupt wallet state: deposits is present but not an array.");
   }
-  if (value.spentDepositIndexes !== undefined && !Array.isArray(value.spentDepositIndexes)) {
+  if (value.spentDepositRefs !== undefined && !Array.isArray(value.spentDepositRefs)) {
+    throw new Error("Corrupt wallet state: spentDepositRefs is present but not an array.");
+  }
+  if (
+    version <= 2 &&
+    value.spentDepositIndexes !== undefined &&
+    !Array.isArray(value.spentDepositIndexes)
+  ) {
     throw new Error("Corrupt wallet state: spentDepositIndexes is present but not an array.");
   }
   const outputs = value.outputs.map(validateOwnedOutput);
@@ -390,7 +449,14 @@ function validateWalletState(value: unknown): WalletState {
   });
   const transactions = value.transactions.map(validateTransaction);
   const deposits = (value.deposits ?? []).map(validateOwnedDeposit);
-  const spentDepositIndexes = (value.spentDepositIndexes ?? []).map((index, i) => {
+  const spentDepositRefs = (value.spentDepositRefs ?? []).map((ref, i) => {
+    if (typeof ref !== "string" || ref.length === 0) {
+      throw new Error(`Corrupt wallet state: spentDepositRefs[${i}] is not a string.`);
+    }
+    return ref;
+  });
+  const rawSpentIndexes = Array.isArray(value.spentDepositIndexes) ? value.spentDepositIndexes : [];
+  const spentDepositIndexes = rawSpentIndexes.map((index, i) => {
     if (typeof index !== "number" || !Number.isInteger(index)) {
       throw new Error(`Corrupt wallet state: spentDepositIndexes[${i}] is not an integer.`);
     }
@@ -403,6 +469,7 @@ function validateWalletState(value: unknown): WalletState {
     spentKeyImages,
     transactions,
     deposits,
+    spentDepositRefs,
     spentDepositIndexes,
   };
 }

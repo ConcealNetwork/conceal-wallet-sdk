@@ -257,7 +257,7 @@ export function scanTransactionOutputsAndDeposits(
     const globalIndex =
       Array.isArray(tx.outputIndexes) && typeof tx.outputIndexes[outputIndex] === "number"
         ? (tx.outputIndexes[outputIndex] as number)
-        : outputIndex;
+        : 0;
 
     // A type-`03` output carrying a `term` is a DEPOSIT: it is recorded in `deposits`
     // ONLY — never in `owned` — so locked principal stays out of the spendable balance

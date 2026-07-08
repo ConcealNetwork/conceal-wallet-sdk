@@ -16,12 +16,13 @@
 import type { Account } from "./account";
 import type { StorageAdapter } from "./adapters";
 import type { DaemonClient, DaemonRawTransaction } from "./daemon";
-import { findWithdrawnDepositIndexes, type RawDepositInput } from "./deposits";
+import { findWithdrawnDepRefs, isWithdrawShape, type RawDepositInput } from "./deposits";
 import {
   type RawTransaction,
   type RawTransactionOutput,
   scanTransactionOutputsAndDeposits,
 } from "./transactions";
+import { canonVinType, canonVoutType, parseDaemonNum } from "./tx-shape";
 import {
   applyScannedDeposits,
   applyScannedTransaction,
@@ -144,7 +145,10 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
       const depositInputs = extractDepositInputs(rawTx.transaction);
       const candidateDeposits =
         ownedDeposits.length > 0 ? [...state.deposits, ...ownedDeposits] : state.deposits;
-      const withdrawnIndexes = findWithdrawnDepositIndexes(depositInputs, candidateDeposits);
+      const withdrawnRefs =
+        depositInputs.length > 0 && isWithdrawShape(rawTx.transaction, depositInputs)
+          ? findWithdrawnDepRefs(depositInputs, candidateDeposits, state.spentDepositRefs)
+          : [];
 
       // Skip transactions that touch us in NO way — no owned output, no spent key image,
       // no owned deposit created, and no owned deposit withdrawn. A tx that ONLY creates
@@ -153,7 +157,7 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
         ownedOutputs.length === 0 &&
         inputKeyImages.length === 0 &&
         ownedDeposits.length === 0 &&
-        withdrawnIndexes.length === 0
+        withdrawnRefs.length === 0
       ) {
         continue;
       }
@@ -173,8 +177,8 @@ export function createWalletSync(opts: SyncOptions): WalletSync {
 
       // Add owned deposits and mark any withdrawn deposit spent (mirrors the legacy
       // `Wallet.deposits` bookkeeping; principal stays out of spendable balance).
-      if (ownedDeposits.length > 0 || withdrawnIndexes.length > 0) {
-        state = applyScannedDeposits(state, ownedDeposits, withdrawnIndexes);
+      if (ownedDeposits.length > 0 || withdrawnRefs.length > 0) {
+        state = applyScannedDeposits(state, ownedDeposits, withdrawnRefs);
       }
     }
   }
@@ -302,14 +306,16 @@ export function extractDepositInputs(transaction: unknown): RawDepositInput[] {
   for (const input of vin) {
     if (!isRecord(input)) continue;
     const source = isRecord(input.value) ? input.value : input;
-    const type = input.type ?? source.type;
-    if (type !== "input_to_deposit_key" && type !== "03") continue;
-    const outputIndex = source.outputIndex;
-    const term = source.term;
+    const type = canonVinType(input.type ?? source.type);
+    if (type !== "input_to_deposit_key") continue;
+    const outputIndex = parseDaemonNum(source.outputIndex);
+    const term = parseDaemonNum(source.term);
+    const amount = parseDaemonNum(source.amount);
     deposits.push({
       type: "input_to_deposit_key",
-      ...(typeof outputIndex === "number" ? { outputIndex } : {}),
-      ...(typeof term === "number" ? { term } : {}),
+      ...(outputIndex !== undefined ? { outputIndex } : {}),
+      ...(term !== undefined ? { term } : {}),
+      ...(amount !== undefined ? { amount } : {}),
     });
   }
   return deposits;
@@ -334,22 +340,28 @@ function normalizeVout(vout: unknown): RawTransactionOutput[] | null {
   if (!Array.isArray(vout)) return null;
   const outputs: RawTransactionOutput[] = [];
   for (const out of vout) {
-    if (!isRecord(out)) return null;
+    if (!isRecord(out)) continue;
     const target = out.target;
-    if (!isRecord(target)) return null;
-    const type = target.type;
+    if (!isRecord(target)) continue;
+    const canonType = canonVoutType(target.type);
     const data = target.data;
-    if (typeof type !== "string" || !isRecord(data)) return null;
+    if (canonType === null || !isRecord(data)) continue;
+
+    const amount = parseDaemonNum(out.amount) ?? 0;
+    const term = parseDaemonNum(data.term);
+    const requiredSignatures = parseDaemonNum(data.required_signatures);
+
     outputs.push({
-      amount: typeof out.amount === "number" ? out.amount : 0,
+      amount,
       target: {
-        type,
+        type: canonType,
         data: {
           ...(typeof data.key === "string" ? { key: data.key } : {}),
           ...(Array.isArray(data.keys)
             ? { keys: data.keys.filter((k): k is string => typeof k === "string") }
             : {}),
-          ...(typeof data.term === "number" ? { term: data.term } : {}),
+          ...(term !== undefined ? { term } : {}),
+          ...(requiredSignatures !== undefined ? { required_signatures: requiredSignatures } : {}),
         },
       },
     });

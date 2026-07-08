@@ -33,15 +33,20 @@ import {
  *  - {@link OwnedDeposit} — a detected, owned deposit recovered during scanning.
  *  - {@link scanDepositOutput} — recover an `OwnedDeposit` from an owned type-`03`
  *    output (mirrors `TransactionsExplorer.parse` deposit detection).
- *  - {@link findWithdrawnDepositIndexes} — withdrawal detection: a type-`03` vin whose
- *    `outputIndex` matches an owned deposit's `globalIndex` marks it spent.
+ *  - {@link findWithdrawnDepositIndexes} — withdrawal detection: wallet-core
+ *    `Wallet.addWithdrawal` matches GLOBAL `outputIndex` + principal `amount`.
  *
  * The deposit/withdraw BUILD path (`buildDepositTransaction` / `buildWithdrawTransaction`)
  * lives in {@link ./transactions} so it can reuse the spend machinery and the lib-js
  * serializer; this module is the interest + scan + type half.
  */
 import { derivePublicKey, generateKeyDerivation } from "./crypto";
+import { parseDaemonNum } from "./tx-shape";
 import type { Hex, WalletKeys } from "./types";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 // ---------------------------------------------------------------------------
 // Interest (VERBATIM port of Interest.ts — bit-exact with the daemon)
@@ -233,8 +238,10 @@ export interface RawDepositInput {
   type?: string;
   /** Deposit term, blocks. */
   term?: number;
-  /** The spent deposit's GLOBAL output index. */
+  /** The spent deposit's GLOBAL output index (on-chain vin field name). */
   outputIndex?: number;
+  /** Principal atomic amount on the type-03 vin. */
+  amount?: number;
 }
 
 /**
@@ -281,29 +288,82 @@ export function scanDepositOutput(args: {
 }
 
 /**
- * Withdrawal detection: return the GLOBAL output indexes of deposits that the given
- * transaction inputs withdraw. A type-`03` `input_to_deposit_key` whose `outputIndex`
- * matches an owned deposit's `globalIndex` marks that deposit spent. (Matching is by
- * the deposit's global output index only — never by vin position — so another user's
- * unlock can never mark our deposit spent; mirrors `TransactionsExplorer.ts:676-716`.)
+ * Sum every vout amount on a raw daemon transaction.
+ */
+export function sumVoutAmount(transaction: unknown): number {
+  if (!isRecord(transaction)) return 0;
+  const vout = transaction.vout;
+  if (!Array.isArray(vout)) return 0;
+  let total = 0;
+  for (const out of vout) {
+    if (!isRecord(out)) continue;
+    const amount = parseDaemonNum(out.amount);
+    if (amount !== undefined) total += amount;
+  }
+  return total;
+}
+
+/**
+ * Withdraw txs carry principal on the type-03 vin and principal + interest on the
+ * vout (`Cn.ts` only allows outputs > inputs for deposits/withdrawals).
+ */
+export function isWithdrawShape(transaction: unknown, inputs: readonly RawDepositInput[]): boolean {
+  if (inputs.length === 0) return false;
+  const inPrincipal = inputs.reduce((sum, vin) => sum + (vin.amount ?? 0), 0);
+  if (inPrincipal <= 0) return false;
+  return sumVoutAmount(transaction) > inPrincipal;
+}
+
+/** Stable deposit identity — wallet-core keys withdrawals on txHash + globalOutputIndex. */
+export function depRef(deposit: Pick<OwnedDeposit, "txHash" | "globalIndex">): string {
+  return `${deposit.txHash}:${deposit.globalIndex}`;
+}
+
+/**
+ * Withdrawal detection: return deposit refs (`txHash:globalIndex`) this tx withdraws.
+ * Mirrors wallet-core `Wallet.addWithdrawal`: match global `outputIndex` + principal
+ * `amount`; skip entries already in `spentDepositRefs`.
+ */
+export function findWithdrawnDepRefs(
+  inputs: readonly RawDepositInput[],
+  ownedDeposits: readonly OwnedDeposit[],
+  spentDepositRefs: readonly string[] = [],
+): string[] {
+  if (!Array.isArray(inputs) || inputs.length === 0 || ownedDeposits.length === 0) {
+    return [];
+  }
+  const spent = new Set(spentDepositRefs);
+  const withdrawn: string[] = [];
+  for (const input of inputs) {
+    if (input?.type !== "input_to_deposit_key") continue;
+    if (typeof input.outputIndex !== "number" || typeof input.amount !== "number") continue;
+
+    for (const deposit of ownedDeposits) {
+      const ref = depRef(deposit);
+      if (spent.has(ref)) continue;
+      if (withdrawn.includes(ref)) continue;
+      if (deposit.globalIndex !== input.outputIndex) continue;
+      if (deposit.amount !== input.amount) continue;
+      withdrawn.push(ref);
+      break;
+    }
+  }
+  return withdrawn;
+}
+
+/**
+ * @deprecated Use {@link findWithdrawnDepRefs}. Returns global indexes only (lossy when
+ * multiple deposits share an index).
  */
 export function findWithdrawnDepositIndexes(
   inputs: readonly RawDepositInput[],
   ownedDeposits: readonly OwnedDeposit[],
+  spentDepositRefs: readonly string[] = [],
 ): number[] {
-  if (!Array.isArray(inputs) || inputs.length === 0 || ownedDeposits.length === 0) {
-    return [];
-  }
-  const ownedGlobalIndexes = new Set(ownedDeposits.map((d) => d.globalIndex));
-  const withdrawn: number[] = [];
-  for (const input of inputs) {
-    if (input?.type !== "input_to_deposit_key") continue;
-    if (typeof input.outputIndex !== "number") continue;
-    if (ownedGlobalIndexes.has(input.outputIndex) && !withdrawn.includes(input.outputIndex)) {
-      withdrawn.push(input.outputIndex);
-    }
-  }
-  return withdrawn;
+  return findWithdrawnDepRefs(inputs, ownedDeposits, spentDepositRefs).map((ref) => {
+    const deposit = ownedDeposits.find((d) => depRef(d) === ref);
+    return deposit?.globalIndex ?? Number.parseInt(ref.split(":")[1] ?? "0", 10);
+  });
 }
 
 /**
