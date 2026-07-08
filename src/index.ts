@@ -42,8 +42,11 @@ export * as deposits from "./deposits";
 export {
   calculateDepositInterest,
   type DepositInterestInput,
+  depRef,
   deriveDepositOneTimeKey,
   findWithdrawnDepositIndexes,
+  findWithdrawnDepRefs,
+  isWithdrawShape,
   type OwnedDeposit,
   type RawDepositInput,
   recomputeDepositInterest,
@@ -115,7 +118,10 @@ export {
   createWalletSync,
   DEFAULT_BATCH_SIZE,
   DEFAULT_STORAGE_KEY,
+  extractDepositInputs,
+  extractInputKeyImages,
   type SyncOptions,
+  toScanTransaction,
   type WalletSync,
 } from "./sync";
 export {
@@ -140,6 +146,7 @@ export type {
 } from "./transactions";
 /** Transaction scanning + (testnet-pending) spend building + message/TTL framing. */
 export * as transactions from "./transactions";
+export { canonVinType, canonVoutType, parseDaemonNum } from "./tx-shape";
 export type {
   DecodedAddress,
   Hex,
