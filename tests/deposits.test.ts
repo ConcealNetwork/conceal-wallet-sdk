@@ -18,6 +18,7 @@ import {
 import {
   buildDepositTransaction,
   buildWithdrawTransaction,
+  decomposeDestinations,
   type RawTransaction,
   type SpendableOutput,
   scanTransactionOutputsAndDeposits,
@@ -250,6 +251,54 @@ describe("buildDepositTransaction", () => {
     expect(built.outputs[0]?.amount).toBe(depositAmount);
   });
 
+  it("change IS decomposed into power-of-ten digit outputs, like a regular send's change", () => {
+    // An amount whose digit decomposition has more than one non-zero chunk, so a
+    // single non-decomposed change output would be a real (bug) regression, not
+    // accidentally identical to the decomposed form.
+    const extra = 3492_493065; // -> 3000000000 + 400000000 + 90000000 + 2000000 + ... + 5
+    const built = buildDepositTransaction({
+      keys: wallet.keys,
+      amount: depositAmount,
+      termBlocks: term,
+      ownKeys: ownKeysOf(created),
+      unspentOutputs: makeInputs(depositAmount + DEPOSIT_TX_FEE + extra),
+      decoys: [],
+      fee: DEPOSIT_TX_FEE,
+      mixin: 0,
+    });
+
+    const expectedChange = decomposeDestinations([
+      {
+        spendPublicKey: wallet.keys.spend.pub,
+        viewPublicKey: wallet.keys.view.pub,
+        amount: extra,
+      },
+    ]);
+    expect(built.changeAmount).toBe(extra);
+    // vout[0] is the (still non-decomposed) deposit output; vout[1..] is decomposed change.
+    expect(built.outputs).toHaveLength(1 + expectedChange.length);
+    expect(built.outputs[0]?.amount).toBe(depositAmount);
+    expect(built.outputs.slice(1).map((o) => o.amount)).toEqual(
+      expectedChange.map((d) => d.amount),
+    );
+    expect(built.outputs.slice(1).reduce((sum, o) => sum + o.amount, 0)).toBe(extra);
+    expect(expectedChange.length).toBeGreaterThan(1); // guard: the fixture is actually multi-chunk
+
+    // Wire-format walk: vout count must include every decomposed change output.
+    const r = makeHexReader(built.serialized);
+    r.readVarint(); // version
+    r.readVarint(); // unlock_time
+    const vinCount = r.readVarint();
+    for (let i = 0; i < vinCount; i++) {
+      r.readHex(1); // ring input tag
+      r.readVarint(); // amount
+      const offsetCount = r.readVarint();
+      for (let j = 0; j < offsetCount; j++) r.readVarint();
+      r.readHex(32); // k_image
+    }
+    expect(r.readVarint()).toBe(1 + expectedChange.length); // vout count
+  });
+
   it("deposit output is owned-scannable back to an OwnedDeposit with the right term/interest", () => {
     const lockHeight = 500000;
     const built = buildDepositTransaction({
@@ -321,7 +370,7 @@ describe("buildWithdrawTransaction", () => {
     };
   }
 
-  it("emits version 2, one input_to_deposit_key vin, one type-02 vout = principal+interest−fee", () => {
+  it("emits version 2, one input_to_deposit_key vin, decomposed type-02 vout(s) summing to principal+interest−fee", () => {
     const deposit = makeOwnedDeposit(1e10, 21900, 413401);
     const built = buildWithdrawTransaction({
       keys: wallet.keys,
@@ -331,9 +380,18 @@ describe("buildWithdrawTransaction", () => {
     });
 
     const expectedOut = deposit.amount + deposit.interest - DEPOSIT_SMALL_WITHDRAW_FEE;
+    const expectedOutputs = decomposeDestinations([
+      {
+        spendPublicKey: wallet.keys.spend.pub,
+        viewPublicKey: wallet.keys.view.pub,
+        amount: expectedOut,
+      },
+    ]);
     expect(built.sentAmount).toBe(expectedOut);
-    expect(built.outputs).toHaveLength(1);
-    expect(built.outputs[0]?.amount).toBe(expectedOut);
+    // Redeem amount is decomposed into power-of-ten digit outputs (like a regular
+    // change output), not a single unique-on-chain denomination with no mixin decoys.
+    expect(built.outputs.map((o) => o.amount)).toEqual(expectedOutputs.map((d) => d.amount));
+    expect(built.outputs.reduce((sum, o) => sum + o.amount, 0)).toBe(expectedOut);
     expect(built.inputs).toHaveLength(1);
     expect(built.inputs[0]?.signatures).toHaveLength(1); // exactly one signature
 
@@ -347,9 +405,12 @@ describe("buildWithdrawTransaction", () => {
     expect(r.readVarint()).toBe(1); // required signatures
     expect(r.readVarint()).toBe(deposit.globalIndex); // outputIndex = global index
     expect(r.readVarint()).toBe(deposit.term); // term
-    expect(r.readVarint()).toBe(1); // vout count
-    expect(r.readVarint()).toBe(expectedOut);
-    expect(r.readHex(1)).toBe("02"); // txout_to_key
+    expect(r.readVarint()).toBe(expectedOutputs.length); // vout count
+    for (const dest of expectedOutputs) {
+      expect(r.readVarint()).toBe(dest.amount);
+      expect(r.readHex(1)).toBe("02"); // txout_to_key
+      r.readHex(32); // skip the one-time output public key
+    }
   });
 
   it("the single signature verifies against the prefix hash + ephemeral pub", () => {
@@ -370,7 +431,6 @@ describe("buildWithdrawTransaction", () => {
     );
     const sig = built.inputs[0]?.signatures[0] as string;
     expect(ccxCrypto.check_signature(built.prefixHash, ephPub, sig)).toBe(true);
-    const out = built.outputs[0] as { amount: number; publicKey: string };
     // The serializer accepts exactly one signature for the type-03 input.
     const { raw } = ccxTransactions.serializeTransactionWithHash({
       version: DEPOSIT_TX_VERSION,
@@ -384,9 +444,10 @@ describe("buildWithdrawTransaction", () => {
           signatures: 1,
         },
       ],
-      vout: [
-        { amount: out.amount, target: { type: "txout_to_key", data: { key: out.publicKey } } },
-      ],
+      vout: built.outputs.map((out) => ({
+        amount: out.amount,
+        target: { type: "txout_to_key", data: { key: out.publicKey } },
+      })),
       extra: built.extra,
       signatures: [[sig]],
     });

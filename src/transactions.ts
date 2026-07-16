@@ -852,17 +852,24 @@ export interface BuildDepositTransactionInput {
 /**
  * Build a broadcast-ready, signed deposit (lock) transaction — version `2`,
  * `unlock_time = 0`, one type-`03` `txout_to_deposit_key` output to the sender's OWN
- * address as `vout[0]` (NOT decomposed), optional type-`02` change, and ordinary
- * type-`02` ring inputs signed with normal ring signatures.
+ * address as `vout[0]` (NOT decomposed), optional decomposed type-`02` change, and
+ * ordinary type-`02` ring inputs signed with normal ring signatures.
  *
  * Faithfully ports the deposit branch of `Cn.construct_tx` (`Cn.ts:2227-2257`):
  *  - Select non-dust type-`02` inputs to cover `amount + fee`; change = inputs − amount − fee.
  *  - Deposit output one-time key (own-address change-path derivation, out_index 0):
  *    `derive_public_key(generate_key_derivation(ownView, r), 0, ownSpend)`.
- *  - The deposit output is `vout[0]`; the change one-time key is derived at the NEXT
- *    out_index (1) — change is NOT decomposed alongside the deposit (a single change
- *    output, matching the legacy deposit path which only decomposes `dsts.slice(1)`,
- *    and here we hold exactly one change destination).
+ *  - The deposit output is `vout[0]` and is NEVER decomposed — it is a type-`03`
+ *    output that only ever spends via the single-signer withdraw path
+ *    ({@link buildWithdrawTransaction}), never as an `input_to_key` ring member, so
+ *    there is no future mixin/decoy availability to protect.
+ *  - Change (when non-zero) IS decomposed into power-of-ten digit outputs via
+ *    {@link decomposeDestinations}, same as {@link buildTransaction}'s change — it is
+ *    an ordinary spendable key output and a future ring member, so a single
+ *    non-decomposed lump would (like the pre-fix withdraw redeem output) carry an
+ *    amount likely unique on the whole chain, permanently blocking any future spend
+ *    of it at a non-zero mixin. Each decomposed change output gets its own one-time
+ *    key at the next out_index (1, 2, ...).
  *  - Sign each type-`02` input over the version-2 prefix hash with
  *    `generate_ring_signature` (unchanged from a regular spend).
  *  - Serialize via lib-js's mainnet-proven serializer.
@@ -890,14 +897,31 @@ export function buildDepositTransaction(input: BuildDepositTransactionInput): Bu
   // is the change-path derivation D = generate_key_derivation(ownView, r) (Cn.ts:2214).
   const outDerivation = generateKeyDerivation(input.ownKeys.viewPublicKey, txSecretKey);
 
-  // vout[0]: the type-03 deposit output (out_index 0). NOT decomposed.
+  // vout[0]: the type-03 deposit output (out_index 0). NOT decomposed — a deposit's
+  // locked principal is never a `input_to_key` ring member (it only ever spends via
+  // the single-signer withdraw path, {@link buildWithdrawTransaction}), so unlike an
+  // ordinary key output there is no future mixin/decoy availability to protect by
+  // matching common on-chain denominations.
   const depositKey = derivePublicKey(outDerivation, 0, input.ownKeys.spendPublicKey) as Hex;
   const outputs: BuiltOutput[] = [{ amount, publicKey: depositKey }];
 
-  // vout[1]: change as an ordinary type-02 output at the NEXT out_index (Cn.ts:2241-2255).
+  // vout[1..]: change as ordinary type-02 outputs, decomposed into power-of-ten digit
+  // outputs at increasing out_index (1, 2, ...) — same as buildTransaction's change.
+  // Change IS a normal spendable key output and a future ring member, so a single
+  // non-decomposed lump would (like the withdraw redeem output before this fix) carry
+  // an amount likely unique on the whole chain, with no mixin decoys ever available.
   if (changeAmount > 0) {
-    const changeKey = derivePublicKey(outDerivation, 1, input.ownKeys.spendPublicKey) as Hex;
-    outputs.push({ amount: changeAmount, publicKey: changeKey });
+    const decomposedChange = decomposeDestinations([
+      {
+        spendPublicKey: input.ownKeys.spendPublicKey,
+        viewPublicKey: input.ownKeys.viewPublicKey,
+        amount: changeAmount,
+      },
+    ]);
+    decomposedChange.forEach((dest, i) => {
+      const changeKey = derivePublicKey(outDerivation, i + 1, input.ownKeys.spendPublicKey) as Hex;
+      outputs.push({ amount: dest.amount, publicKey: changeKey });
+    });
   }
 
   // Build inputs: key image + decoy ring per selected (type-02) output.
@@ -1013,10 +1037,20 @@ export interface BuildWithdrawTransactionInput {
 
 /**
  * Build a broadcast-ready, signed withdraw (unlock) transaction — version `2`,
- * `unlock_time = 0`, exactly ONE type-`03` `input_to_deposit_key` input (no ring, no
- * decoys, mixin 0), and ONE type-`02` output to the sender's own address for
+ * `unlock_time = 0`, exactly ONE type-`03` `input_to_deposit_key` input, and one or
+ * more type-`02` outputs to the sender's own address decomposing
  * `principal + interest − withdrawFee`. Signed with a SINGLE `generate_signature`
  * (NOT a ring signature) over the prefix hash, verified before attaching.
+ *
+ * The type-`03` input has NO mixin/decoys — not a policy choice (unlike e.g. a dust
+ * fusion sweep's `anonymity=0`, which spends ordinary `input_to_key` inputs that
+ * COULD carry decoys but don't need to), but a wire-format constraint: CryptoNote's
+ * `MultisignatureInput` (`amount`, `signatureCount`, `outputIndex`, `term`) has a
+ * single scalar `outputIndex`, not a ring/`outputIndexes` vector like `KeyInput` —
+ * there is no field to put decoys in. `signInputMultisignature` (single signer) is
+ * the matching consensus counterpart to `signInputKey` (ring signer); a deposit
+ * withdrawal is only ever spendable by whoever derived that one deposit output's
+ * one-time key, so there is no anonymity set to mix into in the first place.
  *
  * Faithfully ports `Cn.construct_tx` withdraw branches (`Cn.ts:2125-2134` vin,
  * `Cn.ts:2363-2421` single-sig) + `TransactionsExplorer.createWithdrawTx`
@@ -1024,7 +1058,15 @@ export interface BuildWithdrawTransactionInput {
  *  - vin[0] = `{ input_to_deposit_key, amount: deposit.amount (PRINCIPAL), term,
  *    outputIndex: deposit.globalIndex, signatures: 1 }` — inputs are NOT key-imaged
  *    or sorted for a withdraw.
- *  - vout[0] = type-`02` to self for `deposit.amount + deposit.interest − withdrawFee`.
+ *  - vout = `deposit.amount + deposit.interest − withdrawFee`, decomposed into
+ *    power-of-ten digit outputs to self via {@link decomposeDestinations} (same as
+ *    {@link buildTransaction}'s change output), each with its own one-time key at
+ *    increasing `outIndex`. A single non-decomposed output would carry the exact
+ *    "principal + interest − fee" value, almost always a denomination unique to
+ *    this withdrawal on the whole chain — the daemon then has no other output of
+ *    that amount to offer as a mixin decoy, permanently blocking any future spend
+ *    of it at a non-zero mixin. Decomposed digit outputs are common on-chain and
+ *    stay spendable.
  *  - Re-derive the ephemeral pair from the deposit's SOURCE tx:
  *    `D = generate_key_derivation(deposit.txPublicKey, view.sec)`,
  *    `ephPub = derive_public_key(D, deposit.outputIndex, spend.pub)`,
@@ -1067,12 +1109,27 @@ export function buildWithdrawTransaction(input: BuildWithdrawTransactionInput): 
   const txPublicKey = ccxCrypto.ge_scalarmult_base(txSecretKey) as Hex;
   const extra = `01${txPublicKey}` as Hex;
 
-  // The single redeem output goes back to self (own-address change-path derivation).
-  const outDerivation = generateKeyDerivation(input.ownKeys.viewPublicKey, txSecretKey);
-  const outKey = derivePublicKey(outDerivation, 0, input.ownKeys.spendPublicKey) as Hex;
-  const outputs: BuiltOutput[] = [{ amount: redeemAmount, publicKey: outKey }];
+  // Decompose the redeem amount into CryptoNote power-of-ten digit outputs (all back
+  // to self), same as buildTransaction's change output. A single non-decomposed
+  // output carries the exact "principal + interest − fee" value, which is almost
+  // always a denomination unique to this withdrawal — the daemon then has zero
+  // other outputs of that amount to offer as mixin decoys, permanently blocking any
+  // future spend of it at a non-zero mixin. Decomposed digit outputs (e.g. 3000 +
+  // 400 + 90 + 2) are common on-chain and stay spendable.
+  const decomposed = decomposeDestinations([
+    {
+      spendPublicKey: input.ownKeys.spendPublicKey,
+      viewPublicKey: input.ownKeys.viewPublicKey,
+      amount: redeemAmount,
+    },
+  ]);
+  const outputs: BuiltOutput[] = decomposed.map((dest, outIndex) => {
+    const outDerivation = generateKeyDerivation(dest.viewPublicKey, txSecretKey);
+    const publicKey = derivePublicKey(outDerivation, outIndex, dest.spendPublicKey) as Hex;
+    return { amount: dest.amount, publicKey };
+  });
 
-  // version 2, unlock_time 0; single type-03 input (amount = PRINCIPAL), single type-02 output.
+  // version 2, unlock_time 0; single type-03 input (amount = PRINCIPAL), decomposed type-02 outputs.
   const struct: TxStruct = {
     version: DEPOSIT_TX_VERSION,
     unlock_time: 0,
@@ -1085,7 +1142,10 @@ export function buildWithdrawTransaction(input: BuildWithdrawTransactionInput): 
         signatures: 1,
       },
     ],
-    vout: [{ amount: redeemAmount, target: { type: "txout_to_key", data: { key: outKey } } }],
+    vout: outputs.map((out) => ({
+      amount: out.amount,
+      target: { type: "txout_to_key", data: { key: out.publicKey } },
+    })),
     extra,
     signatures: [],
   };
