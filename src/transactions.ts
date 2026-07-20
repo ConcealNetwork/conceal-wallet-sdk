@@ -42,7 +42,11 @@ import {
   TX_EXTRA_TAG_PUBKEY,
   TX_EXTRA_TTL,
 } from "./constants/message-const";
-import { DEPOSIT_SMALL_WITHDRAW_FEE, MESSAGE_TX_AMOUNT_ATOMIC } from "./constants/tx-const";
+import {
+  DEPOSIT_SMALL_WITHDRAW_FEE,
+  MESSAGE_TX_AMOUNT_ATOMIC,
+  REMOTE_NODE_FEE_ATOMIC,
+} from "./constants/tx-const";
 import {
   ccxCrypto,
   checkSignature,
@@ -362,7 +366,15 @@ export interface Destination {
 export interface BuildTransactionInput {
   /** Spending wallet keys. */
   keys: WalletKeys;
-  /** Recipient destinations (excluding change, which is added automatically). */
+  /**
+   * Recipient destinations (excluding change, which is added automatically).
+   * The remote-node operator fee is NOT built in here — the CALLER appends it as an
+   * extra destination ({@link REMOTE_NODE_FEE_ATOMIC} to the node's fee address),
+   * exactly like legacy wallet-core `sendTransactionOperation` pushed it before
+   * `createTx`. Builders that construct destinations internally
+   * ({@link buildMessageTransaction}, {@link buildDepositTransaction}) instead take
+   * an explicit `nodeFee` input.
+   */
   destinations: Destination[];
   /** Change address — the sender's own decoded keys. */
   changeKeys: { spendPublicKey: Hex; viewPublicKey: Hex };
@@ -845,6 +857,15 @@ export interface BuildDepositTransactionInput {
   fee: number;
   /** Ring size minus one (decoys mixed per real type-`02` input). */
   mixin: number;
+  /**
+   * Optional remote-node operator fee destination (type-`02`). Appended after the
+   * deposit output and covered by input selection — same role as the extra
+   * destination the caller pushes on a regular send (wallet-core
+   * `sendTransactionOperation`) / non-TTL message. `amount` defaults to
+   * {@link REMOTE_NODE_FEE_ATOMIC}. Omit / `null` when the node has no fee address
+   * (or the fee address is the wallet's own).
+   */
+  nodeFee?: { spendPublicKey: Hex; viewPublicKey: Hex; amount?: number } | null;
   /** Dust threshold; outputs at or below this are skipped during selection. */
   dustThreshold?: number;
 }
@@ -855,21 +876,26 @@ export interface BuildDepositTransactionInput {
  * address as `vout[0]` (NOT decomposed), optional decomposed type-`02` change, and
  * ordinary type-`02` ring inputs signed with normal ring signatures.
  *
- * Faithfully ports the deposit branch of `Cn.construct_tx` (`Cn.ts:2227-2257`):
- *  - Select non-dust type-`02` inputs to cover `amount + fee`; change = inputs − amount − fee.
+ * Faithfully ports the deposit branch of `Cn.construct_tx` / `TransactionsExplorer`
+ * (`dsts[0]` kept intact as type-`03`, `dsts.slice(1)` decomposed as type-`02`):
+ *  - Select non-dust type-`02` inputs to cover `amount + fee + nodeFee`; change =
+ *    inputs − amount − fee − nodeFee.
  *  - Deposit output one-time key (own-address change-path derivation, out_index 0):
  *    `derive_public_key(generate_key_derivation(ownView, r), 0, ownSpend)`.
  *  - The deposit output is `vout[0]` and is NEVER decomposed — it is a type-`03`
  *    output that only ever spends via the single-signer withdraw path
  *    ({@link buildWithdrawTransaction}), never as an `input_to_key` ring member, so
  *    there is no future mixin/decoy availability to protect.
+ *  - Optional remote-node fee ({@link BuildDepositTransactionInput.nodeFee}) is a
+ *    type-`02` destination after the deposit (decomposed), matching a regular send's
+ *    operator-fee output — callers supply the fee address/keys from the daemon.
  *  - Change (when non-zero) IS decomposed into power-of-ten digit outputs via
  *    {@link decomposeDestinations}, same as {@link buildTransaction}'s change — it is
  *    an ordinary spendable key output and a future ring member, so a single
  *    non-decomposed lump would (like the pre-fix withdraw redeem output) carry an
  *    amount likely unique on the whole chain, permanently blocking any future spend
- *    of it at a non-zero mixin. Each decomposed change output gets its own one-time
- *    key at the next out_index (1, 2, ...).
+ *    of it at a non-zero mixin. Each type-`02` output gets its own one-time key at
+ *    increasing out_index (1, 2, ...).
  *  - Sign each type-`02` input over the version-2 prefix hash with
  *    `generate_ring_signature` (unchanged from a regular spend).
  *  - Serialize via lib-js's mainnet-proven serializer.
@@ -879,7 +905,9 @@ export function buildDepositTransaction(input: BuildDepositTransactionInput): Bu
 
   const { amount, fee, termBlocks } = input;
   const dustThreshold = input.dustThreshold ?? 0;
-  const targetAmount = amount + fee;
+  // Validated above; the amount is a chain constant unless the caller overrides it.
+  const nodeFeeAmount = input.nodeFee ? (input.nodeFee.amount ?? REMOTE_NODE_FEE_ATOMIC) : 0;
+  const targetAmount = amount + fee + nodeFeeAmount;
 
   const { selected, total: inputsAmount } = selectInputs(
     input.unspentOutputs,
@@ -904,9 +932,29 @@ export function buildDepositTransaction(input: BuildDepositTransactionInput): Bu
   // matching common on-chain denominations.
   const depositKey = derivePublicKey(outDerivation, 0, input.ownKeys.spendPublicKey) as Hex;
   const outputs: BuiltOutput[] = [{ amount, publicKey: depositKey }];
+  let nextOutIndex = 1;
 
-  // vout[1..]: change as ordinary type-02 outputs, decomposed into power-of-ten digit
-  // outputs at increasing out_index (1, 2, ...) — same as buildTransaction's change.
+  // Optional remote-node fee: type-02 destination(s) after the deposit (decomposed),
+  // same as `dsts.slice(1)` in TransactionsExplorer.createTx for deposit txs / the
+  // extra destination on a regular send. Each digit gets its own out_index.
+  if (input.nodeFee && nodeFeeAmount > 0) {
+    const decomposedFee = decomposeDestinations([
+      {
+        spendPublicKey: input.nodeFee.spendPublicKey,
+        viewPublicKey: input.nodeFee.viewPublicKey,
+        amount: nodeFeeAmount,
+      },
+    ]);
+    for (const dest of decomposedFee) {
+      const feeDerivation = generateKeyDerivation(dest.viewPublicKey, txSecretKey);
+      const feeKey = derivePublicKey(feeDerivation, nextOutIndex, dest.spendPublicKey) as Hex;
+      outputs.push({ amount: dest.amount, publicKey: feeKey });
+      nextOutIndex += 1;
+    }
+  }
+
+  // Remaining vouts: change as ordinary type-02 outputs, decomposed into power-of-ten
+  // digit outputs at increasing out_index — same as buildTransaction's change.
   // Change IS a normal spendable key output and a future ring member, so a single
   // non-decomposed lump would (like the withdraw redeem output before this fix) carry
   // an amount likely unique on the whole chain, with no mixin decoys ever available.
@@ -919,7 +967,11 @@ export function buildDepositTransaction(input: BuildDepositTransactionInput): Bu
       },
     ]);
     decomposedChange.forEach((dest, i) => {
-      const changeKey = derivePublicKey(outDerivation, i + 1, input.ownKeys.spendPublicKey) as Hex;
+      const changeKey = derivePublicKey(
+        outDerivation,
+        nextOutIndex + i,
+        input.ownKeys.spendPublicKey,
+      ) as Hex;
       outputs.push({ amount: dest.amount, publicKey: changeKey });
     });
   }
@@ -1009,7 +1061,7 @@ export function buildDepositTransaction(input: BuildDepositTransactionInput): Bu
     outputs,
     fee,
     inputsAmount,
-    sentAmount: amount,
+    sentAmount: amount + nodeFeeAmount,
     changeAmount,
     extra,
     prefixHash,
@@ -1231,6 +1283,17 @@ function validateDepositInput(input: BuildDepositTransactionInput): void {
   }
   if (!Number.isSafeInteger(input.fee) || input.fee < 0) {
     throw new Error("Fee must be a non-negative safe integer (atomic units).");
+  }
+  if (input.nodeFee != null) {
+    if (!isHex32(input.nodeFee.spendPublicKey) || !isHex32(input.nodeFee.viewPublicKey)) {
+      throw new Error("Node fee keys must be 64-char hex.");
+    }
+    if (
+      input.nodeFee.amount !== undefined &&
+      (!Number.isSafeInteger(input.nodeFee.amount) || input.nodeFee.amount <= 0)
+    ) {
+      throw new Error("Node fee amount must be a positive safe integer (atomic units).");
+    }
   }
   if (!Number.isInteger(input.mixin) || input.mixin < 0) {
     throw new Error("Mixin must be a non-negative integer.");
@@ -1626,8 +1689,11 @@ export interface BuildMessageTransactionInput {
   mixin: number;
   /** Absolute Unix expiry seconds; `0`/undefined = no TTL (a mined message). */
   ttlUnixSeconds?: number;
-  /** Remote-node fee destination, appended only when there is no TTL. */
-  nodeFee?: { spendPublicKey: Hex; viewPublicKey: Hex; amount: number } | null;
+  /**
+   * Remote-node fee destination, appended only when there is no TTL. `amount`
+   * defaults to {@link REMOTE_NODE_FEE_ATOMIC}.
+   */
+  nodeFee?: { spendPublicKey: Hex; viewPublicKey: Hex; amount?: number } | null;
   /** Recipient self-output amount; defaults to {@link MESSAGE_TX_AMOUNT_ATOMIC} (100). */
   messageAmount?: number;
   /** Dust threshold; outputs at or below this are skipped during selection. */
@@ -1680,7 +1746,7 @@ export function buildMessageTransaction(input: BuildMessageTransactionInput): Bu
     destinations.push({
       spendPublicKey: input.nodeFee.spendPublicKey,
       viewPublicKey: input.nodeFee.viewPublicKey,
-      amount: input.nodeFee.amount,
+      amount: input.nodeFee.amount ?? REMOTE_NODE_FEE_ATOMIC,
     });
   }
 

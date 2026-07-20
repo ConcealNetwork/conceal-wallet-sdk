@@ -11,7 +11,10 @@
 export const MINIMUM_FEE_V2 = 1000;
 /** Dust threshold, atomic. */
 export const DUST_THRESHOLD = 10;
-/** Remote-node fee paid as a second destination on a non-TTL message. */
+/**
+ * Remote-node operator fee paid as an extra type-`02` destination on regular
+ * spends, non-TTL messages, and deposits (0.01 CCX).
+ */
 export const REMOTE_NODE_FEE_ATOMIC = 10000;
 /** Recipient self-output amount that marks a transaction as a message. */
 export const MESSAGE_TX_AMOUNT_ATOMIC = 100;

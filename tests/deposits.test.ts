@@ -6,6 +6,7 @@ import {
   DEPOSIT_SMALL_WITHDRAW_FEE,
   DEPOSIT_TX_FEE,
   DEPOSIT_TX_VERSION,
+  REMOTE_NODE_FEE_ATOMIC,
 } from "../src/constants";
 import {
   calculateDepositInterest,
@@ -339,6 +340,84 @@ describe("buildDepositTransaction", () => {
     expect(d.unlockHeight).toBe(lockHeight + term);
     expect(d.interest).toBe(32_500_000);
     expect(d.publicKey).toBe(built.outputs[0]?.publicKey);
+  });
+
+  it("optional nodeFee adds a type-02 operator output after the deposit (like a regular send)", () => {
+    const operator = createAccount();
+    const changeExtra = 5000;
+    const built = buildDepositTransaction({
+      keys: wallet.keys,
+      amount: depositAmount,
+      termBlocks: term,
+      ownKeys: ownKeysOf(created),
+      unspentOutputs: makeInputs(
+        depositAmount + DEPOSIT_TX_FEE + REMOTE_NODE_FEE_ATOMIC + changeExtra,
+      ),
+      decoys: [],
+      fee: DEPOSIT_TX_FEE,
+      mixin: 0,
+      nodeFee: {
+        spendPublicKey: operator.keys.spend.pub,
+        viewPublicKey: operator.keys.view.pub,
+        amount: REMOTE_NODE_FEE_ATOMIC,
+      },
+    });
+
+    expect(built.fee).toBe(DEPOSIT_TX_FEE);
+    expect(built.sentAmount).toBe(depositAmount + REMOTE_NODE_FEE_ATOMIC);
+    expect(built.changeAmount).toBe(changeExtra);
+    // vout[0] = deposit; vout[1] = node fee (10000 is already a single digit); then change.
+    expect(built.outputs[0]?.amount).toBe(depositAmount);
+    expect(built.outputs[1]?.amount).toBe(REMOTE_NODE_FEE_ATOMIC);
+    expect(built.outputs.slice(2).reduce((sum, o) => sum + o.amount, 0)).toBe(changeExtra);
+
+    // Operator owns the node-fee output; deposit owner does not.
+    const feeScanTx: RawTransaction = {
+      extra: built.extra,
+      vout: built.outputs.map((out, i) =>
+        i === 0
+          ? {
+              amount: out.amount,
+              target: {
+                type: "03",
+                data: { keys: [out.publicKey], required_signatures: 1, term },
+              },
+            }
+          : {
+              amount: out.amount,
+              target: { type: "02", data: { key: out.publicKey } },
+            },
+      ),
+    };
+    const forOperator = scanTransactionOutputsAndDeposits(feeScanTx, operator.keys);
+    expect(forOperator.outputs.some((o) => o.amount === REMOTE_NODE_FEE_ATOMIC)).toBe(true);
+    expect(forOperator.deposits).toHaveLength(0);
+
+    const forOwner = scanTransactionOutputsAndDeposits(feeScanTx, keysOf(created));
+    expect(forOwner.deposits).toHaveLength(1);
+    expect(forOwner.outputs.every((o) => o.amount !== REMOTE_NODE_FEE_ATOMIC)).toBe(true);
+  });
+
+  it("nodeFee amount defaults to REMOTE_NODE_FEE_ATOMIC when omitted", () => {
+    const operator = createAccount();
+    const built = buildDepositTransaction({
+      keys: wallet.keys,
+      amount: depositAmount,
+      termBlocks: term,
+      ownKeys: ownKeysOf(created),
+      unspentOutputs: makeInputs(depositAmount + DEPOSIT_TX_FEE + REMOTE_NODE_FEE_ATOMIC),
+      decoys: [],
+      fee: DEPOSIT_TX_FEE,
+      mixin: 0,
+      nodeFee: {
+        spendPublicKey: operator.keys.spend.pub,
+        viewPublicKey: operator.keys.view.pub,
+        // no amount — single source of truth is the chain constant
+      },
+    });
+    expect(built.outputs[1]?.amount).toBe(REMOTE_NODE_FEE_ATOMIC);
+    expect(built.sentAmount).toBe(depositAmount + REMOTE_NODE_FEE_ATOMIC);
+    expect(built.changeAmount).toBe(0);
   });
 });
 
