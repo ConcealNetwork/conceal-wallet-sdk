@@ -412,6 +412,39 @@ describe("buildTransaction", () => {
     expect(built.txSecretKey).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("folds a nodeFee destination into ascending type-02 output order with change", () => {
+    // Pretty UTXO; change includes a digit smaller than the 10000 node fee so a
+    // glued append would fingerprint the fee — joint decompose must sort them.
+    const utxo = ownedSpendable(txKeypair("c9"), 2_000_000, 101);
+    const operator = account("fe");
+    const built = buildTransaction({
+      keys: keysOf(sender),
+      destinations: [
+        {
+          spendPublicKey: recipient.spend.pub,
+          viewPublicKey: recipient.view.pub,
+          amount: 1_000_000,
+        },
+        {
+          spendPublicKey: operator.spend.pub,
+          viewPublicKey: operator.view.pub,
+          amount: 10_000,
+        },
+      ],
+      changeKeys: { spendPublicKey: sender.spend.pub, viewPublicKey: sender.view.pub },
+      unspentOutputs: [utxo],
+      decoys: [],
+      fee: 1000,
+      mixin: 0,
+    });
+    // inputs 2_000_000 − sent 1_010_000 − fee 1000 = change 989_000 → … + 9000 + …
+    expect(built.changeAmount).toBe(989_000);
+    const amounts = built.outputs.map((o) => o.amount);
+    expect(amounts).toEqual([...amounts].sort((a, b) => a - b));
+    expect(amounts).toContain(10_000);
+    expect(amounts.indexOf(9000)).toBeLessThan(amounts.indexOf(10_000));
+  });
+
   it("default extra is byte-identical to 01 + R (no hook)", () => {
     const built = buildTransaction(baseInput());
     expect(built.extra).toBe(`01${built.txPublicKey}`);

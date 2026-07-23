@@ -372,8 +372,11 @@ describe("buildDepositTransaction", () => {
     expect(d.publicKey).toBe(built.outputs[0]?.publicKey);
   });
 
-  it("optional nodeFee adds a type-02 operator output after the deposit (like a regular send)", () => {
+  it("optional nodeFee is sorted with change among type-02 outputs (not glued at vout[1])", () => {
     const operator = createAccount();
+    // changeExtra < REMOTE_NODE_FEE_ATOMIC so a glued fee-then-change order would be
+    // [deposit, 10000, 5000] — the privacy fingerprint. Correct order is ascending:
+    // [deposit, 5000, 10000].
     const changeExtra = 5000;
     const built = buildDepositTransaction({
       keys: wallet.keys,
@@ -396,10 +399,10 @@ describe("buildDepositTransaction", () => {
     expect(built.fee).toBe(DEPOSIT_TX_FEE);
     expect(built.sentAmount).toBe(depositAmount + REMOTE_NODE_FEE_ATOMIC);
     expect(built.changeAmount).toBe(changeExtra);
-    // vout[0] = deposit; vout[1] = node fee (10000 is already a single digit); then change.
     expect(built.outputs[0]?.amount).toBe(depositAmount);
-    expect(built.outputs[1]?.amount).toBe(REMOTE_NODE_FEE_ATOMIC);
-    expect(built.outputs.slice(2).reduce((sum, o) => sum + o.amount, 0)).toBe(changeExtra);
+    const type02Amounts = built.outputs.slice(1).map((o) => o.amount);
+    expect(type02Amounts).toEqual([...type02Amounts].sort((a, b) => a - b));
+    expect(type02Amounts).toEqual([changeExtra, REMOTE_NODE_FEE_ATOMIC]);
 
     // Operator owns the node-fee output; deposit owner does not.
     const feeScanTx: RawTransaction = {

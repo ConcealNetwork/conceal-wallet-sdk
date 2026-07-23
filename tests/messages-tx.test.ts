@@ -250,6 +250,39 @@ describe("buildMessageTransaction — round-trip", () => {
     expect(read?.body).toBeNull();
   });
 
+  it("node-fee operator can claim the fee output but cannot decrypt the FS body", () => {
+    const operator = createAccount();
+    const body = "secret for recipient only";
+    const built = buildMessageTransaction({
+      ...baseInput({ body }),
+      keys: builderKeys(),
+      ttlUnixSeconds: 0,
+      nodeFee: {
+        spendPublicKey: operator.keys.spend.pub,
+        viewPublicKey: operator.keys.view.pub,
+        amount: REMOTE_NODE_FEE_ATOMIC,
+      },
+    });
+    const amounts = built.outputs.map((o) => o.amount);
+    expect(amounts).toEqual([...amounts].sort((a, b) => a - b));
+    expect(amounts).toContain(REMOTE_NODE_FEE_ATOMIC);
+
+    const rawTx: RawTransaction = {
+      extra: recoverExtra(built),
+      vout: built.outputs.map((o) => ({
+        amount: o.amount,
+        target: { type: "02", data: { key: o.publicKey } },
+      })),
+    };
+    const forOperator = readMessageFromTransaction(rawTx, operator.keys);
+    expect(forOperator).not.toBeNull();
+    expect(forOperator?.owned.some((o) => o.amount === REMOTE_NODE_FEE_ATOMIC)).toBe(true);
+    expect(forOperator?.body).toBeNull();
+
+    const forRecipient = readMessageFromTransaction(rawTx, B.keys);
+    expect(forRecipient?.body).toBe(body);
+  });
+
   it("round-trips a smart message (ChaCha12) with ACTION_MAP shorthand", () => {
     const body = encodeSmartMessage("2FA", "verify", "site"); // → {2FA,v,site}
     expect(body).toBe("{2FA,v,site}");
