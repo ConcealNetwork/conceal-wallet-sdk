@@ -19,6 +19,7 @@ import {
   getApproximateTransactionSize,
   isAmountApplicableInFusionInput,
   isOptimizationNeeded,
+  isPrettyAmount,
   selectFusionInputs,
 } from "../src/fusion";
 import type { ScanKeys } from "../src/transactions";
@@ -87,6 +88,21 @@ function out(amount: number, gi: number): SpendableOutput {
 const pickFirst = (_n: number) => 0;
 
 const HEIGHT = 1_000_000; // well above UPGRADE_HEIGHT_V4
+
+// --- isPrettyAmount --------------------------------------------------------
+
+describe("isPrettyAmount", () => {
+  it("accepts exact PRETTY_AMOUNTS ladder members", () => {
+    expect(isPrettyAmount(500)).toBe(true);
+    expect(isPrettyAmount(1000)).toBe(true);
+    expect(isPrettyAmount(5_000_000)).toBe(true);
+  });
+
+  it("rejects non-pretty amounts (e.g. malformed change)", () => {
+    expect(isPrettyAmount(12345)).toBe(false);
+    expect(isPrettyAmount(999)).toBe(false);
+  });
+});
 
 // --- isAmountApplicableInFusionInput ---------------------------------------
 

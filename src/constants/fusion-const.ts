@@ -86,3 +86,15 @@ export const PRETTY_AMOUNTS: readonly number[] = [
   4000000000000000000, 5000000000000000000, 6000000000000000000, 7000000000000000000,
   8000000000000000000, 9000000000000000000, 10000000000000000000,
 ];
+
+/** O(1) membership for {@link isPrettyAmount} (hot path: input selection). */
+const PRETTY_AMOUNT_SET: ReadonlySet<number> = new Set(PRETTY_AMOUNTS);
+
+/**
+ * True when `amount` is an exact member of {@link PRETTY_AMOUNTS} (`{1..9} × 10^k`).
+ * Non-pretty amounts (e.g. malformed change like 12345) cannot be ring-mixed at
+ * non-zero mixin — no on-chain decoys share that denomination.
+ */
+export function isPrettyAmount(amount: number): boolean {
+  return PRETTY_AMOUNT_SET.has(amount);
+}

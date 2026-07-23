@@ -1,5 +1,5 @@
 import { crypto as ccxCrypto, transactions as ccxTransactions } from "conceal-lib-js";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAccount } from "../src/account";
 import {
   DEPOSIT_MIN_TERM_BLOCK,
@@ -8,6 +8,7 @@ import {
   DEPOSIT_TX_VERSION,
   REMOTE_NODE_FEE_ATOMIC,
 } from "../src/constants";
+import { cnutils } from "../src/crypto";
 import {
   calculateDepositInterest,
   depRef,
@@ -16,6 +17,7 @@ import {
   isWithdrawShape,
   type OwnedDeposit,
 } from "../src/deposits";
+import * as rng from "../src/random";
 import {
   buildDepositTransaction,
   buildWithdrawTransaction,
@@ -59,6 +61,24 @@ function spendableOutput(
   const ephemeralSecret = ccxCrypto.derive_secret_key(derivation, 0, wallet.spend.sec);
   const keyImage = ccxCrypto.generate_key_image(publicKey, ephemeralSecret);
   return { amount, globalIndex, outputIndex: 0, txPublicKey: tx.pub, publicKey, keyImage };
+}
+
+/**
+ * Build spendable inputs that sum to `total`, each a pretty denomination so
+ * {@link selectInputs} (which skips non-pretty UTXOs) can select them.
+ * Sorted ascending so the default picker (index 0) must take the small digits
+ * before the large chunk — otherwise a single large UTXO covers the target early
+ * and change assertions that assume the full `total` was spent fail.
+ */
+function prettyInputs(wallet: Created, total: number, baseGlobalIndex = 100): SpendableOutput[] {
+  return cnutils
+    .decompose_amount_into_digits(total)
+    .map((digit: { toString(): string }) => Number(digit.toString()))
+    .filter((amount: number) => amount > 0)
+    .sort((a: number, b: number) => a - b)
+    .map((amount: number, i: number) =>
+      spendableOutput(wallet, amount, baseGlobalIndex + i, (i + 1).toString(16).padStart(2, "0")),
+    );
 }
 
 /** Minimal hex-reader for asserting wire-format tags/values (mirrors lib-js test). */
@@ -187,12 +207,20 @@ describe("calculateDepositInterest — dispatch + V2/V1", () => {
 // ===========================================================================
 
 describe("buildDepositTransaction", () => {
+  // Pin input picks to ascending (legacy test fixtures assume all pretty digits are spent).
+  beforeEach(() => {
+    vi.spyOn(rng, "randomUnit").mockReturnValue(0);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const wallet = createAccount();
   // createAccount().keys is `{ spend, view }` — the same shape `spendableOutput` reads.
   const created = { spend: wallet.keys.spend, view: wallet.keys.view } as Created;
 
   function makeInputs(amount: number): SpendableOutput[] {
-    return [spendableOutput(created, amount, 100, "ab")];
+    return prettyInputs(created, amount, 100);
   }
 
   const depositAmount = 1e10; // 10000 CCX
@@ -215,12 +243,14 @@ describe("buildDepositTransaction", () => {
     expect(r.readVarint()).toBe(DEPOSIT_TX_VERSION); // version = 2
     expect(r.readVarint()).toBe(0); // unlock_time = 0
     const vinCount = r.readVarint();
-    expect(vinCount).toBe(1);
-    expect(r.readHex(1)).toBe("02"); // ring input tag
-    r.readVarint(); // amount
-    const offsetCount = r.readVarint();
-    for (let i = 0; i < offsetCount; i++) r.readVarint();
-    r.readHex(32); // k_image
+    expect(vinCount).toBeGreaterThanOrEqual(1);
+    for (let v = 0; v < vinCount; v++) {
+      expect(r.readHex(1)).toBe("02"); // ring input tag
+      r.readVarint(); // amount
+      const offsetCount = r.readVarint();
+      for (let i = 0; i < offsetCount; i++) r.readVarint();
+      r.readHex(32); // k_image
+    }
     const voutCount = r.readVarint();
     expect(voutCount).toBe(2); // deposit + change
     // vout[0]: deposit output
@@ -342,8 +372,11 @@ describe("buildDepositTransaction", () => {
     expect(d.publicKey).toBe(built.outputs[0]?.publicKey);
   });
 
-  it("optional nodeFee adds a type-02 operator output after the deposit (like a regular send)", () => {
+  it("optional nodeFee is sorted with change among type-02 outputs (not glued at vout[1])", () => {
     const operator = createAccount();
+    // changeExtra < REMOTE_NODE_FEE_ATOMIC so a glued fee-then-change order would be
+    // [deposit, 10000, 5000] — the privacy fingerprint. Correct order is ascending:
+    // [deposit, 5000, 10000].
     const changeExtra = 5000;
     const built = buildDepositTransaction({
       keys: wallet.keys,
@@ -366,10 +399,10 @@ describe("buildDepositTransaction", () => {
     expect(built.fee).toBe(DEPOSIT_TX_FEE);
     expect(built.sentAmount).toBe(depositAmount + REMOTE_NODE_FEE_ATOMIC);
     expect(built.changeAmount).toBe(changeExtra);
-    // vout[0] = deposit; vout[1] = node fee (10000 is already a single digit); then change.
     expect(built.outputs[0]?.amount).toBe(depositAmount);
-    expect(built.outputs[1]?.amount).toBe(REMOTE_NODE_FEE_ATOMIC);
-    expect(built.outputs.slice(2).reduce((sum, o) => sum + o.amount, 0)).toBe(changeExtra);
+    const type02Amounts = built.outputs.slice(1).map((o) => o.amount);
+    expect(type02Amounts).toEqual([...type02Amounts].sort((a, b) => a - b));
+    expect(type02Amounts).toEqual([changeExtra, REMOTE_NODE_FEE_ATOMIC]);
 
     // Operator owns the node-fee output; deposit owner does not.
     const feeScanTx: RawTransaction = {
@@ -577,7 +610,7 @@ describe("buildDepositTransaction — constraints", () => {
   const ownKeys = { spendPublicKey: wallet.keys.spend.pub, viewPublicKey: wallet.keys.view.pub };
 
   function inputs(amount: number): SpendableOutput[] {
-    return [spendableOutput(created, amount, 200, "dd")];
+    return prettyInputs(created, amount, 200);
   }
 
   it("rejects an amount below the 1 CCX (1e6 atomic) minimum", () => {

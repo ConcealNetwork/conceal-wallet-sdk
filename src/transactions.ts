@@ -27,6 +27,7 @@ import {
   DEPOSIT_MIN_TERM_BLOCK,
   DEPOSIT_TX_VERSION,
 } from "./constants/blockchain";
+import { isPrettyAmount } from "./constants/fusion-const";
 import {
   ENCRYPTED_PAYMENT_ID_TAIL,
   INTEGRATED_PAYMENT_ID_BYTE_SIZE,
@@ -65,6 +66,7 @@ import {
   scanDepositOutput,
 } from "./deposits";
 import { decryptMessage, deriveMessageKey, encryptMessage } from "./messages";
+import * as rng from "./random";
 import type { Hex, WalletKeys } from "./types";
 
 /** Re-export the shared hex alias for convenience. */
@@ -515,20 +517,25 @@ export interface InputSelection {
 
 /**
  * Greedily select unspent outputs until they cover `targetAmount` (send + fee),
- * skipping dust. Deterministic given `order` (a 0..1 picker; defaults to ascending
- * so tests are reproducible — the live wallet shuffles). Throws when the wallet's
- * non-dust balance can't cover the target.
+ * skipping dust and non-pretty amounts ({@link isPrettyAmount}). Non-pretty UTXOs
+ * remain in the wallet but are excluded from ring spends — decoys cannot be found
+ * for their denomination.
+ *
+ * Live default picks with CSPRNG (`randomUnit`, legacy `MathUtil.randomFloat`).
+ * Pass `order: () => 0` only in tests for a deterministic ascending pick.
  */
 export function selectInputs(
   unspentOutputs: readonly SpendableOutput[],
   targetAmount: number,
   dustThreshold = 0,
-  order: (length: number) => number = () => 0,
+  order: (length: number) => number = () => rng.randomUnit(),
 ): InputSelection {
   if (!Number.isFinite(targetAmount) || targetAmount < 0) {
     throw new Error("Target amount must be a non-negative finite number.");
   }
-  const candidates = unspentOutputs.filter((out) => out.amount > dustThreshold);
+  const candidates = unspentOutputs.filter(
+    (out) => out.amount > dustThreshold && isPrettyAmount(out.amount),
+  );
   const pool = [...candidates];
   const selected: SpendableOutput[] = [];
   let total = 0;
@@ -542,8 +549,13 @@ export function selectInputs(
   }
 
   if (total < targetAmount) {
+    const prettyBalance = candidates.reduce((s, o) => s + o.amount, 0);
+    const suffix =
+      prettyBalance < targetAmount && unspentOutputs.some((o) => !isPrettyAmount(o.amount))
+        ? " (some balance is in non-pretty, un-mixable outputs)"
+        : "";
     throw new Error(
-      `Insufficient spendable balance: have ${total} (non-dust), need ${targetAmount}.`,
+      `Insufficient spendable balance: have ${total} (non-dust, pretty)${suffix}, need ${targetAmount}.`,
     );
   }
   return { selected, total };
@@ -858,12 +870,12 @@ export interface BuildDepositTransactionInput {
   /** Ring size minus one (decoys mixed per real type-`02` input). */
   mixin: number;
   /**
-   * Optional remote-node operator fee destination (type-`02`). Appended after the
-   * deposit output and covered by input selection — same role as the extra
-   * destination the caller pushes on a regular send (wallet-core
-   * `sendTransactionOperation`) / non-TTL message. `amount` defaults to
-   * {@link REMOTE_NODE_FEE_ATOMIC}. Omit / `null` when the node has no fee address
-   * (or the fee address is the wallet's own).
+   * Optional remote-node operator fee destination (type-`02`). Folded into the
+   * post-deposit type-`02` pool with change, then decomposed + sorted ascending
+   * by amount (legacy `decompose_tx_destinations(dsts.slice(1))`) — never left
+   * glued at `vout[1]`, which fingerprints web-wallet deposits. Covered by input
+   * selection. `amount` defaults to {@link REMOTE_NODE_FEE_ATOMIC}. Omit / `null`
+   * when the node has no fee address (or the fee address is the wallet's own).
    */
   nodeFee?: { spendPublicKey: Hex; viewPublicKey: Hex; amount?: number } | null;
   /** Dust threshold; outputs at or below this are skipped during selection. */
@@ -886,16 +898,18 @@ export interface BuildDepositTransactionInput {
  *    output that only ever spends via the single-signer withdraw path
  *    ({@link buildWithdrawTransaction}), never as an `input_to_key` ring member, so
  *    there is no future mixin/decoy availability to protect.
- *  - Optional remote-node fee ({@link BuildDepositTransactionInput.nodeFee}) is a
- *    type-`02` destination after the deposit (decomposed), matching a regular send's
- *    operator-fee output — callers supply the fee address/keys from the daemon.
- *  - Change (when non-zero) IS decomposed into power-of-ten digit outputs via
- *    {@link decomposeDestinations}, same as {@link buildTransaction}'s change — it is
- *    an ordinary spendable key output and a future ring member, so a single
- *    non-decomposed lump would (like the pre-fix withdraw redeem output) carry an
- *    amount likely unique on the whole chain, permanently blocking any future spend
- *    of it at a non-zero mixin. Each type-`02` output gets its own one-time key at
- *    increasing out_index (1, 2, ...).
+ *  - Optional remote-node fee ({@link BuildDepositTransactionInput.nodeFee}) and
+ *    change (when non-zero) are BOTH type-`02` destinations after the deposit —
+ *    collected together then run through one {@link decomposeDestinations} so every
+ *    type-`02` digit is sorted ascending by amount (legacy
+ *    `decompose_tx_destinations(dsts.slice(1))`). Leaving the fee glued at `vout[1]`
+ *    fingerprints remote-node web-wallet deposits. Callers supply the fee
+ *    address/keys from the daemon.
+ *  - Change IS an ordinary spendable key output and a future ring member, so a
+ *    single non-decomposed lump would (like the pre-fix withdraw redeem output)
+ *    carry an amount likely unique on the whole chain, permanently blocking any
+ *    future spend of it at a non-zero mixin. Each type-`02` output gets its own
+ *    one-time key at increasing out_index (1, 2, ...).
  *  - Sign each type-`02` input over the version-2 prefix hash with
  *    `generate_ring_signature` (unchanged from a regular spend).
  *  - Serialize via lib-js's mainnet-proven serializer.
@@ -921,8 +935,9 @@ export function buildDepositTransaction(input: BuildDepositTransactionInput): Bu
   const txPublicKey = ccxCrypto.ge_scalarmult_base(txSecretKey) as Hex;
   const extra = `01${txPublicKey}` as Hex;
 
-  // The deposit + change both go to the sender's own address, so the output derivation
-  // is the change-path derivation D = generate_key_derivation(ownView, r) (Cn.ts:2214).
+  // Deposit (and change) go to the sender's own address — change-path derivation
+  // D = generate_key_derivation(ownView, r) (Cn.ts:2214). Fee outputs use the
+  // operator's view key via the same out_index progression below.
   const outDerivation = generateKeyDerivation(input.ownKeys.viewPublicKey, txSecretKey);
 
   // vout[0]: the type-03 deposit output (out_index 0). NOT decomposed — a deposit's
@@ -932,49 +947,32 @@ export function buildDepositTransaction(input: BuildDepositTransactionInput): Bu
   // matching common on-chain denominations.
   const depositKey = derivePublicKey(outDerivation, 0, input.ownKeys.spendPublicKey) as Hex;
   const outputs: BuiltOutput[] = [{ amount, publicKey: depositKey }];
-  let nextOutIndex = 1;
 
-  // Optional remote-node fee: type-02 destination(s) after the deposit (decomposed),
-  // same as `dsts.slice(1)` in TransactionsExplorer.createTx for deposit txs / the
-  // extra destination on a regular send. Each digit gets its own out_index.
+  // Remaining vouts: node fee + change as ordinary type-02 outputs, decomposed AND
+  // sorted ascending together — mirrors TransactionsExplorer.createRawTx deposit
+  // branch (`[depositDst].concat(decompose_tx_destinations(dsts.slice(1)))`).
+  const type02Dests: Destination[] = [];
   if (input.nodeFee && nodeFeeAmount > 0) {
-    const decomposedFee = decomposeDestinations([
-      {
-        spendPublicKey: input.nodeFee.spendPublicKey,
-        viewPublicKey: input.nodeFee.viewPublicKey,
-        amount: nodeFeeAmount,
-      },
-    ]);
-    for (const dest of decomposedFee) {
-      const feeDerivation = generateKeyDerivation(dest.viewPublicKey, txSecretKey);
-      const feeKey = derivePublicKey(feeDerivation, nextOutIndex, dest.spendPublicKey) as Hex;
-      outputs.push({ amount: dest.amount, publicKey: feeKey });
-      nextOutIndex += 1;
-    }
-  }
-
-  // Remaining vouts: change as ordinary type-02 outputs, decomposed into power-of-ten
-  // digit outputs at increasing out_index — same as buildTransaction's change.
-  // Change IS a normal spendable key output and a future ring member, so a single
-  // non-decomposed lump would (like the withdraw redeem output before this fix) carry
-  // an amount likely unique on the whole chain, with no mixin decoys ever available.
-  if (changeAmount > 0) {
-    const decomposedChange = decomposeDestinations([
-      {
-        spendPublicKey: input.ownKeys.spendPublicKey,
-        viewPublicKey: input.ownKeys.viewPublicKey,
-        amount: changeAmount,
-      },
-    ]);
-    decomposedChange.forEach((dest, i) => {
-      const changeKey = derivePublicKey(
-        outDerivation,
-        nextOutIndex + i,
-        input.ownKeys.spendPublicKey,
-      ) as Hex;
-      outputs.push({ amount: dest.amount, publicKey: changeKey });
+    type02Dests.push({
+      spendPublicKey: input.nodeFee.spendPublicKey,
+      viewPublicKey: input.nodeFee.viewPublicKey,
+      amount: nodeFeeAmount,
     });
   }
+  if (changeAmount > 0) {
+    type02Dests.push({
+      spendPublicKey: input.ownKeys.spendPublicKey,
+      viewPublicKey: input.ownKeys.viewPublicKey,
+      amount: changeAmount,
+    });
+  }
+  const decomposedType02 = decomposeDestinations(type02Dests);
+  decomposedType02.forEach((dest, i) => {
+    const outIndex = 1 + i;
+    const derivation = generateKeyDerivation(dest.viewPublicKey, txSecretKey);
+    const publicKey = derivePublicKey(derivation, outIndex, dest.spendPublicKey) as Hex;
+    outputs.push({ amount: dest.amount, publicKey });
+  });
 
   // Build inputs: key image + decoy ring per selected (type-02) output.
   const decoyByAmount = new Map<number, DecoyOutput[]>();

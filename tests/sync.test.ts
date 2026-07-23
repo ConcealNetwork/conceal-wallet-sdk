@@ -168,22 +168,24 @@ describe("toScanTransaction", () => {
   it("canonicalizes builder/daemon deposit vouts (txout_to_deposit_key + string fields) for scan", () => {
     const recipient = created("aa");
     const walletKeys = accountOf(recipient).keys;
-    const tx = txKeypair("bd");
 
-    const spendable: SpendableOutput = (() => {
-      const derivation = ccxCrypto.generate_key_derivation(recipient.view.pub, tx.sec);
+    // Two pretty-denomination inputs (1e10 + fee); a single (1e10+fee) lump is
+    // non-pretty and is skipped by selectInputs.
+    const spendables: SpendableOutput[] = [1e10, DEPOSIT_TX_FEE].map((amount, i) => {
+      const inTx = txKeypair(i === 0 ? "bd" : "be");
+      const derivation = ccxCrypto.generate_key_derivation(recipient.view.pub, inTx.sec);
       const publicKey = ccxCrypto.derive_public_key(derivation, 0, recipient.spend.pub);
       const ephemeralSecret = ccxCrypto.derive_secret_key(derivation, 0, recipient.spend.sec);
       const keyImage = ccxCrypto.generate_key_image(publicKey, ephemeralSecret);
       return {
-        amount: 1e10 + DEPOSIT_TX_FEE,
-        globalIndex: 100,
+        amount,
+        globalIndex: 100 + i,
         outputIndex: 0,
-        txPublicKey: tx.pub,
+        txPublicKey: inTx.pub,
         publicKey,
         keyImage,
       };
-    })();
+    });
 
     const depositAmount = 1e10;
     const term = 21900;
@@ -195,7 +197,7 @@ describe("toScanTransaction", () => {
       amount: depositAmount,
       termBlocks: term,
       ownKeys: { spendPublicKey: recipient.spend.pub, viewPublicKey: recipient.view.pub },
-      unspentOutputs: [spendable],
+      unspentOutputs: spendables,
       decoys: [],
       fee: DEPOSIT_TX_FEE,
       mixin: 0,
