@@ -27,6 +27,7 @@
 import { UPGRADE_HEIGHT_V4 } from "./constants/blockchain";
 import * as fusionConst from "./constants/fusion-const";
 import { DEFAULT_MIXIN, DUST_THRESHOLD, MINIMUM_FEE_V2 } from "./constants/tx-const";
+import { randomIndex } from "./random";
 import {
   type BuiltTransaction,
   buildTransaction,
@@ -47,16 +48,18 @@ export interface FusionAmountApplicability {
   amountPowerOfTen?: number;
 }
 
+/** Re-export: exact `{1..9} × 10^k` denomination check (see {@link fusionConst.isPrettyAmount}). */
+export const isPrettyAmount = fusionConst.isPrettyAmount;
+
 /**
  * Whether an output `amount` qualifies as a fusion input at `threshold` and chain
  * `height`. Ports `Currency.isAmountApplicableInFusionTransactionInput` (`Currency.ts:52-75`)
  * verbatim. ALL must hold:
  *  1. `amount < threshold` (strictly below).
  *  2. Below {@link UPGRADE_HEIGHT_V4}: `amount >= DUST_THRESHOLD` (dropped at/after V4).
- *  3. `amount` is an exact "pretty" amount — `idx = PRETTY_AMOUNTS.findIndex(a => a >= amount)`
- *     and `PRETTY_AMOUNTS[idx] === amount`. Non-pretty amounts (e.g. change like 12345)
- *     are rejected.
- *  4. Bucket = `Math.floor(idx / 9)` (the ladder has 9 entries per decade).
+ *  3. `amount` is an exact "pretty" amount ({@link isPrettyAmount}). Non-pretty amounts
+ *     (e.g. change like 12345) are rejected.
+ *  4. Bucket = `Math.floor(prettyIndex / 9)` (the ladder has 9 entries per decade).
  */
 export function isAmountApplicableInFusionInput(
   amount: number,
@@ -71,12 +74,11 @@ export function isAmountApplicableInFusionInput(
     return { applicable: false };
   }
 
-  const idx = fusionConst.PRETTY_AMOUNTS.findIndex((a) => a >= amount);
-
-  if (idx === -1 || fusionConst.PRETTY_AMOUNTS[idx] !== amount) {
+  if (!isPrettyAmount(amount)) {
     return { applicable: false };
   }
 
+  const idx = fusionConst.PRETTY_AMOUNTS.findIndex((a) => a >= amount);
   const amountPowerOfTen = Math.floor(idx / 9);
 
   return { applicable: true, amountPowerOfTen };
@@ -247,13 +249,13 @@ export interface FusionInputSelection {
 /**
  * A shuffle/picker seam: given `n`, return an index in `[0, n)`. Mirrors the
  * `order`/`ShuffleGenerator` seam in `selectInputs` so tests are reproducible while the
- * live wallet shuffles. The default picks index 0 (deterministic, ascending).
+ * live wallet shuffles (CSPRNG). Pass `() => 0` in tests for determinism.
  */
 export type FusionShuffle = (n: number) => number;
 
-/** Default shuffle: a uniform random index in `[0, n)` (the live-wallet behavior). */
+/** Default shuffle: CSPRNG uniform index in `[0, n)` (legacy `MathUtil.randomFloat`). */
 function defaultFusionShuffle(n: number): number {
-  return Math.floor(Math.random() * n);
+  return randomIndex(n);
 }
 
 /**

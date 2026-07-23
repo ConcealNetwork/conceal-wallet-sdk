@@ -82,6 +82,7 @@ export {
   getApproximateTransactionSize,
   isAmountApplicableInFusionInput,
   isOptimizationNeeded,
+  isPrettyAmount,
   selectFusionInputs,
 } from "./fusion";
 export {
@@ -112,6 +113,7 @@ export {
   type OutboundQueueResult,
   type OutboundQueueState,
 } from "./outbound-queue";
+export { randomIndex, randomUnit } from "./random";
 /** `{status,<kind>,…}` Pulse / check-in encode-decode. */
 export * as smartPulse from "./smart-pulse";
 export {
@@ -146,6 +148,7 @@ export type {
 } from "./transactions";
 /** Transaction scanning + (testnet-pending) spend building + message/TTL framing. */
 export * as transactions from "./transactions";
+export { selectInputs } from "./transactions";
 export { canonVinType, canonVoutType, parseDaemonNum } from "./tx-shape";
 export type {
   DecodedAddress,

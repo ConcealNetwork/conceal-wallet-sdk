@@ -27,6 +27,7 @@ import {
   DEPOSIT_MIN_TERM_BLOCK,
   DEPOSIT_TX_VERSION,
 } from "./constants/blockchain";
+import { isPrettyAmount } from "./constants/fusion-const";
 import {
   ENCRYPTED_PAYMENT_ID_TAIL,
   INTEGRATED_PAYMENT_ID_BYTE_SIZE,
@@ -65,6 +66,7 @@ import {
   scanDepositOutput,
 } from "./deposits";
 import { decryptMessage, deriveMessageKey, encryptMessage } from "./messages";
+import * as rng from "./random";
 import type { Hex, WalletKeys } from "./types";
 
 /** Re-export the shared hex alias for convenience. */
@@ -515,20 +517,25 @@ export interface InputSelection {
 
 /**
  * Greedily select unspent outputs until they cover `targetAmount` (send + fee),
- * skipping dust. Deterministic given `order` (a 0..1 picker; defaults to ascending
- * so tests are reproducible — the live wallet shuffles). Throws when the wallet's
- * non-dust balance can't cover the target.
+ * skipping dust and non-pretty amounts ({@link isPrettyAmount}). Non-pretty UTXOs
+ * remain in the wallet but are excluded from ring spends — decoys cannot be found
+ * for their denomination.
+ *
+ * Live default picks with CSPRNG (`randomUnit`, legacy `MathUtil.randomFloat`).
+ * Pass `order: () => 0` only in tests for a deterministic ascending pick.
  */
 export function selectInputs(
   unspentOutputs: readonly SpendableOutput[],
   targetAmount: number,
   dustThreshold = 0,
-  order: (length: number) => number = () => 0,
+  order: (length: number) => number = () => rng.randomUnit(),
 ): InputSelection {
   if (!Number.isFinite(targetAmount) || targetAmount < 0) {
     throw new Error("Target amount must be a non-negative finite number.");
   }
-  const candidates = unspentOutputs.filter((out) => out.amount > dustThreshold);
+  const candidates = unspentOutputs.filter(
+    (out) => out.amount > dustThreshold && isPrettyAmount(out.amount),
+  );
   const pool = [...candidates];
   const selected: SpendableOutput[] = [];
   let total = 0;
@@ -542,8 +549,13 @@ export function selectInputs(
   }
 
   if (total < targetAmount) {
+    const prettyBalance = candidates.reduce((s, o) => s + o.amount, 0);
+    const suffix =
+      prettyBalance < targetAmount && unspentOutputs.some((o) => !isPrettyAmount(o.amount))
+        ? " (some balance is in non-pretty, un-mixable outputs)"
+        : "";
     throw new Error(
-      `Insufficient spendable balance: have ${total} (non-dust), need ${targetAmount}.`,
+      `Insufficient spendable balance: have ${total} (non-dust, pretty)${suffix}, need ${targetAmount}.`,
     );
   }
   return { selected, total };

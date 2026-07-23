@@ -271,28 +271,43 @@ describe("selectInputs", () => {
     publicKey: "bb".repeat(32),
     keyImage: `${gi}`.padStart(64, "0"),
   });
+  /** Deterministic ascending pick (index 0 every time). */
+  const asc = () => 0;
 
   it("selects enough non-dust outputs to cover the target", () => {
-    const sel = selectInputs([out(100, 1), out(200, 2), out(300, 3)], 250, 0);
+    const sel = selectInputs([out(100, 1), out(200, 2), out(300, 3)], 250, 0, asc);
     expect(sel.total).toBeGreaterThanOrEqual(250);
     expect(sel.selected.length).toBeGreaterThan(0);
   });
 
   it("skips dust outputs", () => {
-    const sel = selectInputs([out(5, 1), out(1000, 2)], 100, 10);
+    const sel = selectInputs([out(5, 1), out(1000, 2)], 100, 10, asc);
     expect(sel.selected.every((o) => o.amount > 10)).toBe(true);
     expect(sel.total).toBe(1000);
   });
 
   it("throws when the non-dust balance can't cover the target", () => {
-    expect(() => selectInputs([out(50, 1)], 1000, 0)).toThrow(/insufficient/i);
+    expect(() => selectInputs([out(50, 1)], 1000, 0, asc)).toThrow(/insufficient/i);
   });
 
-  it("is deterministic with the default ascending picker", () => {
+  it("is deterministic with an ascending picker", () => {
     const outs = [out(100, 1), out(200, 2), out(300, 3)];
-    const a = selectInputs(outs, 250, 0);
-    const b = selectInputs(outs, 250, 0);
+    const a = selectInputs(outs, 250, 0, asc);
+    const b = selectInputs(outs, 250, 0, asc);
     expect(a.selected.map((o) => o.globalIndex)).toEqual(b.selected.map((o) => o.globalIndex));
+  });
+
+  it("skips non-pretty (un-mixable) outputs during selection", () => {
+    // 12345 alone would cover 5000, but is not pretty → must use the pretty pool.
+    const sel = selectInputs([out(12345, 1), out(1000, 2), out(4000, 3)], 5000, 0, asc);
+    expect(sel.selected.every((o) => o.amount !== 12345)).toBe(true);
+    expect(sel.total).toBeGreaterThanOrEqual(5000);
+  });
+
+  it("throws when only non-pretty outputs could cover the target", () => {
+    expect(() => selectInputs([out(12345, 1), out(99999, 2)], 1000, 0, asc)).toThrow(
+      /non-pretty, un-mixable/,
+    );
   });
 });
 
