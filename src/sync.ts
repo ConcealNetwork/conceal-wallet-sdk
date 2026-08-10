@@ -267,7 +267,20 @@ export function toScanTransaction(rawTx: DaemonRawTransaction): RawTransaction |
  * inputs carry the key image either directly (`vin[i].k_image`) or nested under a
  * `value` object (`vin[i].value.k_image`), matching the legacy daemon shapes.
  * Returns lowercase-hex key images; non-key inputs (e.g. coinbase) are skipped.
+ *
+ * Key images are normalized to lowercase and validated as 64-char hex so a mixed
+ * or uppercase `k_image` from any daemon variant still matches the wallet's own
+ * lowercase key images (produced by the WASM `generate_key_image`), and a garbage
+ * `vin` field cannot poison the spend-detection Set.
  */
+const KEY_IMAGE_RE = /^[0-9a-f]{64}$/;
+
+function normalizeKeyImage(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  const normalized = raw.toLowerCase();
+  return KEY_IMAGE_RE.test(normalized) ? normalized : undefined;
+}
+
 export function extractInputKeyImages(transaction: unknown): string[] {
   if (!isRecord(transaction)) return [];
   const vin = transaction.vin;
@@ -276,14 +289,15 @@ export function extractInputKeyImages(transaction: unknown): string[] {
   const keyImages: string[] = [];
   for (const input of vin) {
     if (!isRecord(input)) continue;
-    const direct = input.k_image;
-    if (typeof direct === "string" && direct.length > 0) {
+    const direct = normalizeKeyImage(input.k_image);
+    if (direct !== undefined) {
       keyImages.push(direct);
       continue;
     }
     const value = input.value;
-    if (isRecord(value) && typeof value.k_image === "string" && value.k_image.length > 0) {
-      keyImages.push(value.k_image);
+    if (isRecord(value)) {
+      const nested = normalizeKeyImage(value.k_image);
+      if (nested !== undefined) keyImages.push(nested);
     }
   }
   return keyImages;

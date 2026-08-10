@@ -260,6 +260,35 @@ describe("extractInputKeyImages", () => {
     expect(extractInputKeyImages(tx)).toEqual(["aa".repeat(32), "bb".repeat(32)]);
   });
 
+  it("lowercases uppercase daemon k_image values so they match WASM-generated key images", () => {
+    // A daemon/node variant that returns uppercase hex must still match the wallet's
+    // own lowercase key images (from generate_key_image). Without lowercasing, the
+    // spend is never detected → balance shows too high, outgoing tx drops from history.
+    const upper = "AB".repeat(32);
+    const tx = {
+      vin: [
+        { type: "02", k_image: upper },
+        { type: "02", value: { k_image: `CD`.repeat(32) } },
+      ],
+    };
+    expect(extractInputKeyImages(tx)).toEqual(["ab".repeat(32), "cd".repeat(32)]);
+  });
+
+  it("skips malformed k_image values so a garbage vin field cannot poison spend detection", () => {
+    const tx = {
+      vin: [
+        { type: "02", k_image: "not-a-key-image" },
+        { type: "02", k_image: "zz".repeat(32) }, // non-hex
+        { type: "02", k_image: "ab".repeat(31) }, // wrong length
+        { type: "02", value: { k_image: "" } },
+        // A garbage direct k_image falls through to a valid nested value.k_image.
+        { type: "02", k_image: "garbage", value: { k_image: "cd".repeat(32) } },
+        { type: "02", k_image: "ef".repeat(32) }, // valid
+      ],
+    };
+    expect(extractInputKeyImages(tx)).toEqual(["cd".repeat(32), "ef".repeat(32)]);
+  });
+
   it("returns [] for inputs without key images", () => {
     expect(extractInputKeyImages({ vin: [] })).toEqual([]);
     expect(extractInputKeyImages(null)).toEqual([]);
