@@ -45,7 +45,7 @@
     "conceal-lib-js": "https://github.com/ConcealNetwork/conceal-lib-js/releases/download/v0.3.0/conceal-lib-js-0.3.0.tgz"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.0",
+    "@biomejs/biome": "^2.5.5",
     "@types/node": "^25",
     "tsup": "^8.5.0",
     "typescript": "^6",
