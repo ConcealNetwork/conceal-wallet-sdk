@@ -972,6 +972,100 @@ describe("WalletState v1 → v2 deserialize", () => {
     expect(round.deposits[0]).toEqual(deposit);
   });
 
+  it("keeps deposits whose txHash is empty (daemon omitted the hash) on reload", () => {
+    const deposit: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 42,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 21900,
+      blockHeight: 413401,
+      txHash: "",
+      interest: 32_500_000,
+      unlockHeight: 413401 + 21900,
+    };
+    const state = createWalletState({ address: "ccx7test", keys: undefined as never });
+    const withDeposit = applyScannedDeposits(state, [deposit]);
+    const round = deserializeWalletState(serializeWalletState(withDeposit));
+    expect(round.deposits).toHaveLength(1);
+    expect(round.deposits[0]).toEqual(deposit);
+  });
+
+  it("distinct empty-txHash deposits survive a reload (keyed by globalIndex fallback)", () => {
+    const base = {
+      amount: 1e10,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      term: 21900,
+      blockHeight: 413401,
+      interest: 32_500_000,
+      unlockHeight: 413401 + 21900,
+    };
+    const a: OwnedDeposit = {
+      ...base,
+      globalIndex: 42,
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      txHash: "",
+    };
+    const b: OwnedDeposit = {
+      ...base,
+      globalIndex: 43,
+      publicKey: "ce".repeat(32),
+      keys: ["ce".repeat(32)],
+      txHash: "",
+    };
+    const state = createWalletState({ address: "ccx7test", keys: undefined as never });
+    const withDeposits = applyScannedDeposits(state, [a, b]);
+    expect(withDeposits.deposits).toHaveLength(2);
+
+    const round = deserializeWalletState(serializeWalletState(withDeposits));
+    expect(round.deposits).toHaveLength(2);
+    expect(round.deposits.map((d) => d.globalIndex).sort()).toEqual([42, 43]);
+  });
+
+  it("still dedupes deposits sharing the same non-empty txHash", () => {
+    const base = {
+      amount: 1e10,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      term: 21900,
+      blockHeight: 413401,
+      interest: 32_500_000,
+      unlockHeight: 413401 + 21900,
+      txHash: "ef".repeat(32),
+    };
+    const first: OwnedDeposit = {
+      ...base,
+      globalIndex: 42,
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+    };
+    const dup: OwnedDeposit = {
+      ...base,
+      globalIndex: 43,
+      publicKey: "ce".repeat(32),
+      keys: ["ce".repeat(32)],
+    };
+    const blob = JSON.stringify({
+      version: 3,
+      state: {
+        address: "ccx7test",
+        scannedHeight: 100,
+        outputs: [],
+        spentKeyImages: [],
+        transactions: [],
+        deposits: [first, dup],
+        spentDepositRefs: [],
+      },
+    });
+    const state = deserializeWalletState(blob);
+    expect(state.deposits).toHaveLength(1);
+    expect(state.deposits[0]).toEqual(dup); // last entry wins, as before
+  });
+
   it("rejects a version newer than the SDK understands", () => {
     const future = JSON.stringify({ version: 99, state: {} });
     expect(() => deserializeWalletState(future)).toThrow(/Unsupported wallet state version/);
