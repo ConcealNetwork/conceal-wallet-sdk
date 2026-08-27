@@ -243,7 +243,9 @@ export function getDustAmount(state: WalletState, dustThreshold?: number): numbe
 /**
  * Merge scanned deposits into the wallet state and mark any withdrawn deposits spent,
  * returning a NEW state (inputs are never mutated):
- *  - add newly-owned deposits, de-duped by `txHash` (wallet-core `Wallet.addDeposit`);
+ *  - add newly-owned deposits, de-duped by creation `txHash` (falling back to
+ *    `txHash:globalIndex` when the daemon omitted the hash) — wallet-core
+ *    `Wallet.addDeposit`;
  *  - record `withdrawnRefs` (from {@link ../deposits.findWithdrawnDepRefs}) in
  *    `spentDepositRefs`.
  *
@@ -259,7 +261,9 @@ export function applyScannedDeposits(
   let depositsChanged = false;
   const nextDeposits = [...state.deposits];
   for (const deposit of ownedDeposits) {
-    const idx = nextDeposits.findIndex((entry) => entry.txHash === deposit.txHash);
+    const idx = nextDeposits.findIndex(
+      (entry) => depositDedupeKey(entry) === depositDedupeKey(deposit),
+    );
     if (idx >= 0) {
       if (nextDeposits[idx] !== deposit) {
         nextDeposits[idx] = deposit;
@@ -354,11 +358,24 @@ export function deserializeWalletState(json: string): WalletState {
   return normalizeWalletState(parsed.state, parsed.version);
 }
 
+/**
+ * Dedupe key for an owned deposit: the creation `txHash` (wallet-core
+ * `Wallet.addDeposit` keeps one entry per creation tx), falling back to the
+ * stable `txHash:globalIndex` ref when the daemon omitted the hash — otherwise
+ * every deposit with an empty `txHash` would collapse into one entry (or be
+ * dropped entirely by {@link dedupeDepositsByTx}). Note: if a later rescan of the
+ * same output supplies the missing hash, the keys won't match and the entry
+ * duplicates rather than merges — acceptable next to the previous silent drop.
+ */
+function depositDedupeKey(deposit: Pick<OwnedDeposit, "txHash" | "globalIndex">): string {
+  return deposit.txHash || depRef(deposit);
+}
+
 /** Wallet-core `addDeposit` keeps one entry per creation `txHash`. */
 function dedupeDepositsByTx(deposits: readonly OwnedDeposit[]): OwnedDeposit[] {
   const byTx = new Map<string, OwnedDeposit>();
   for (const deposit of deposits) {
-    if (deposit.txHash) byTx.set(deposit.txHash, deposit);
+    byTx.set(depositDedupeKey(deposit), deposit);
   }
   return [...byTx.values()];
 }
