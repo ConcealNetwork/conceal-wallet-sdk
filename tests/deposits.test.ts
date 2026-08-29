@@ -775,7 +775,8 @@ describe("deposit scan + wallet state", () => {
     expect(withdrawn).toEqual([depRef(deposit)]);
 
     state = applyScannedDeposits(state, [], withdrawn);
-    expect(state.spentDepositRefs).toEqual([depRef(deposit)]);
+    expect(state.spentDepositRefs).toContain(depRef(deposit));
+    expect(state.spentDepositRefs).toContain(`:${deposit.globalIndex}`);
   });
 
   it("another user's unlock (non-owned global index) does not mark our deposit spent", () => {
@@ -1024,6 +1025,93 @@ describe("WalletState v1 → v2 deserialize", () => {
     const round = deserializeWalletState(serializeWalletState(withDeposits));
     expect(round.deposits).toHaveLength(2);
     expect(round.deposits.map((d) => d.globalIndex).sort()).toEqual([42, 43]);
+  });
+
+  it("merges a later rescan that supplies txHash for the same globalIndex (no twin)", () => {
+    const hash = "ef".repeat(32);
+    const base = {
+      amount: 1e10,
+      globalIndex: 42,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 21900,
+      blockHeight: 413401,
+      interest: 32_500_000,
+      unlockHeight: 413401 + 21900,
+    };
+    const withoutHash: OwnedDeposit = { ...base, txHash: "" };
+    const withHash: OwnedDeposit = { ...base, txHash: hash };
+
+    let state = createWalletState({ address: "ccx7test", keys: undefined as never });
+    state = applyScannedDeposits(state, [withoutHash]);
+    expect(state.deposits).toHaveLength(1);
+    expect(state.deposits[0]?.txHash).toBe("");
+
+    state = applyScannedDeposits(state, [withHash]);
+    expect(state.deposits).toHaveLength(1);
+    expect(state.deposits[0]?.txHash).toBe(hash);
+    expect(state.deposits[0]?.globalIndex).toBe(42);
+  });
+
+  it("heals hash/empty-hash twins on deserialize and migrates spentDepositRefs", () => {
+    const hash = "ef".repeat(32);
+    const base = {
+      amount: 1e10,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 21900,
+      blockHeight: 413401,
+      interest: 32_500_000,
+      unlockHeight: 413401 + 21900,
+    };
+    const emptyTwin: OwnedDeposit = { ...base, globalIndex: 42, txHash: "" };
+    const hashTwin: OwnedDeposit = { ...base, globalIndex: 42, txHash: hash };
+    const blob = JSON.stringify({
+      version: 3,
+      state: {
+        address: "ccx7test",
+        scannedHeight: 100,
+        outputs: [],
+        spentKeyImages: [],
+        transactions: [],
+        deposits: [emptyTwin, hashTwin],
+        spentDepositRefs: [":42"],
+      },
+    });
+    const state = deserializeWalletState(blob);
+    expect(state.deposits).toHaveLength(1);
+    expect(state.deposits[0]?.txHash).toBe(hash);
+    expect(state.spentDepositRefs).toEqual([`${hash}:42`]);
+  });
+
+  it("withdrawal marks every ref alias so empty-hash twins cannot stay unlocked", () => {
+    const hash = "ef".repeat(32);
+    const unlockHeight = 413401 + 21900;
+    const deposit: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 42,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 21900,
+      blockHeight: 413401,
+      txHash: "",
+      interest: 32_500_000,
+      unlockHeight,
+    };
+    let state = createWalletState({ address: "ccx7test", keys: undefined as never });
+    state = applyScannedDeposits(state, [deposit]);
+    state = applyScannedDeposits(state, [{ ...deposit, txHash: hash }]);
+    expect(state.deposits).toHaveLength(1);
+
+    state = applyScannedDeposits(state, [], [`${hash}:42`]);
+    expect(getUnlockedDeposits(state, unlockHeight)).toHaveLength(0);
+    expect(getLockedDeposits(state, unlockHeight)).toHaveLength(0);
   });
 
   it("still dedupes deposits sharing the same non-empty txHash", () => {

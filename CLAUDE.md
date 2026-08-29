@@ -23,6 +23,8 @@ npm run release             # build + types + npm pack (produces the release tar
 
 Quality gate before completing changes: `npm run types && npm run lint && npm test`.
 
+**Node / WASM:** CI and `engines` require Node **≥ 24**. On Node 22, run tests with `NODE_OPTIONS=--experimental-wasm-modules npm test` so lib-js WASM loads.
+
 ## Conventions & gotchas
 
 - **Biome only** (no ESLint/Prettier). CI gates on `npm run lint` / `npm run types` (exit non-zero on errors), so run both before pushing.
