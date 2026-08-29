@@ -766,7 +766,8 @@ describe("createWalletSync.syncOnce — deposits", () => {
       return Promise.resolve(out);
     };
     state = await sync.syncOnce();
-    expect(state.spentDepositRefs).toEqual([depRef(deposited)]);
+    expect(state.spentDepositRefs).toContain(depRef(deposited));
+    expect(state.spentDepositRefs).toContain(`:${deposited.globalIndex}`);
     expect(getUnlockedDeposits(state, withdrawTx.height as number)).toHaveLength(0);
   });
 
@@ -837,6 +838,7 @@ describe("createWalletSync.syncOnce — deposits", () => {
       return Promise.resolve(out);
     };
     state = await sync.syncOnce();
-    expect(state.spentDepositRefs).toEqual([depRef(deposited)]);
+    expect(state.spentDepositRefs).toContain(depRef(deposited));
+    expect(state.spentDepositRefs).toContain(`:${deposited.globalIndex}`);
   });
 });

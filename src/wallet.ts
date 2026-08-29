@@ -243,7 +243,10 @@ export function getDustAmount(state: WalletState, dustThreshold?: number): numbe
 /**
  * Merge scanned deposits into the wallet state and mark any withdrawn deposits spent,
  * returning a NEW state (inputs are never mutated):
- *  - add newly-owned deposits, de-duped by `txHash` (wallet-core `Wallet.addDeposit`);
+ *  - add newly-owned deposits, de-duped by creation `txHash` (falling back to
+ *    `txHash:globalIndex` when the daemon omitted the hash). When either the stored
+ *    or incoming row lacks a hash, the same output is reconciled by `globalIndex` +
+ *    `publicKey` so a later rescan enriches `txHash` instead of appending a twin;
  *  - record `withdrawnRefs` (from {@link ../deposits.findWithdrawnDepRefs}) in
  *    `spentDepositRefs`.
  *
@@ -257,13 +260,25 @@ export function applyScannedDeposits(
   withdrawnRefs: readonly string[] = [],
 ): WalletState {
   let depositsChanged = false;
+  let nextSpentDepositRefs = [...state.spentDepositRefs];
   const nextDeposits = [...state.deposits];
   for (const deposit of ownedDeposits) {
-    const idx = nextDeposits.findIndex((entry) => entry.txHash === deposit.txHash);
+    const idx = findMatchingDepositIndex(nextDeposits, deposit);
     if (idx >= 0) {
-      if (nextDeposits[idx] !== deposit) {
-        nextDeposits[idx] = deposit;
+      const existing = nextDeposits[idx];
+      if (existing === undefined) continue;
+      const merged = mergeDeposit(existing, deposit);
+      const enrichedHash = !existing.txHash && merged.txHash;
+      if (existing !== merged) {
+        nextDeposits[idx] = merged;
         depositsChanged = true;
+        if (enrichedHash) {
+          nextSpentDepositRefs = migrateSpentRefsForEnrichedHash(
+            nextSpentDepositRefs,
+            merged.globalIndex,
+            merged.txHash,
+          );
+        }
       }
     } else {
       nextDeposits.push(deposit);
@@ -271,18 +286,21 @@ export function applyScannedDeposits(
     }
   }
 
-  const spent = new Set(state.spentDepositRefs);
+  const spentSet = new Set(nextSpentDepositRefs);
   const newlySpent: string[] = [];
   for (const ref of withdrawnRefs) {
-    if (nextDeposits.some((d) => depRef(d) === ref) && !spent.has(ref)) {
-      spent.add(ref);
-      newlySpent.push(ref);
+    for (const alias of withdrawalRefAliases(ref, nextDeposits)) {
+      if (!spentSet.has(alias)) {
+        spentSet.add(alias);
+        newlySpent.push(alias);
+      }
     }
   }
-  const nextSpentDepositRefs =
-    newlySpent.length > 0 ? [...state.spentDepositRefs, ...newlySpent] : state.spentDepositRefs;
+  if (newlySpent.length > 0) {
+    nextSpentDepositRefs = [...nextSpentDepositRefs, ...newlySpent];
+  }
 
-  if (!depositsChanged && nextSpentDepositRefs === state.spentDepositRefs) {
+  if (!depositsChanged && newlySpent.length === 0) {
     return state;
   }
   return { ...state, deposits: nextDeposits, spentDepositRefs: nextSpentDepositRefs };
@@ -354,13 +372,92 @@ export function deserializeWalletState(json: string): WalletState {
   return normalizeWalletState(parsed.state, parsed.version);
 }
 
+/**
+ * Dedupe key for an owned deposit: the creation `txHash` (wallet-core
+ * `Wallet.addDeposit` keeps one entry per creation tx), falling back to the
+ * stable `txHash:globalIndex` ref when the daemon omitted the hash — otherwise
+ * every deposit with an empty `txHash` would collapse into one entry (or be
+ * dropped entirely by {@link dedupeDepositsByTx}).
+ */
+function depositDedupeKey(deposit: Pick<OwnedDeposit, "txHash" | "globalIndex">): string {
+  return deposit.txHash || depRef(deposit);
+}
+
+/** True when two rows describe the same on-chain type-`03` output. */
+function isSameDepositOutput(
+  a: Pick<OwnedDeposit, "txHash" | "globalIndex" | "publicKey">,
+  b: Pick<OwnedDeposit, "txHash" | "globalIndex" | "publicKey">,
+): boolean {
+  if (depositDedupeKey(a) === depositDedupeKey(b)) return true;
+  if (a.globalIndex !== b.globalIndex || a.publicKey !== b.publicKey) return false;
+  if (!a.txHash || !b.txHash) return true;
+  return a.txHash === b.txHash;
+}
+
+function findMatchingDepositIndex(
+  deposits: readonly OwnedDeposit[],
+  deposit: OwnedDeposit,
+): number {
+  return deposits.findIndex((entry) => isSameDepositOutput(entry, deposit));
+}
+
+/** Prefer the rescanned row; keep a previously-known hash when the daemon still omits it. */
+function mergeDeposit(existing: OwnedDeposit, incoming: OwnedDeposit): OwnedDeposit {
+  return { ...existing, ...incoming, txHash: incoming.txHash || existing.txHash };
+}
+
+/** `depRef` global-index suffix (`hash:42` or `:42`). */
+function globalIndexFromDepRef(ref: string): number | null {
+  const colon = ref.lastIndexOf(":");
+  if (colon < 0) return null;
+  const gi = Number.parseInt(ref.slice(colon + 1), 10);
+  return Number.isFinite(gi) && gi >= 0 ? gi : null;
+}
+
+/** When hash enrichment arrives, upgrade legacy `:globalIndex` spent markers. */
+function migrateSpentRefsForEnrichedHash(
+  spentRefs: readonly string[],
+  globalIndex: number,
+  txHash: string,
+): string[] {
+  if (!txHash) return [...spentRefs];
+  const from = `:${globalIndex}`;
+  const to = `${txHash}:${globalIndex}`;
+  let changed = false;
+  const next = spentRefs.map((ref) => {
+    if (ref === from) {
+      changed = true;
+      return to;
+    }
+    return ref;
+  });
+  return changed ? next : [...spentRefs];
+}
+
+/** All `spentDepositRefs` aliases for one withdrawal (hash vs empty-hash twins). */
+function withdrawalRefAliases(ref: string, deposits: readonly OwnedDeposit[]): string[] {
+  const gi = globalIndexFromDepRef(ref);
+  if (gi === null) {
+    return deposits.some((d) => depRef(d) === ref) ? [ref] : [];
+  }
+  const aliases = new Set<string>([ref, `:${gi}`]);
+  for (const deposit of deposits) {
+    if (deposit.globalIndex === gi) aliases.add(depRef(deposit));
+  }
+  return deposits.some((d) => d.globalIndex === gi) ? [...aliases] : [];
+}
+
 /** Wallet-core `addDeposit` keeps one entry per creation `txHash`. */
 function dedupeDepositsByTx(deposits: readonly OwnedDeposit[]): OwnedDeposit[] {
-  const byTx = new Map<string, OwnedDeposit>();
+  const merged: OwnedDeposit[] = [];
   for (const deposit of deposits) {
-    if (deposit.txHash) byTx.set(deposit.txHash, deposit);
+    const idx = findMatchingDepositIndex(merged, deposit);
+    if (idx >= 0) {
+      const existing = merged[idx];
+      if (existing !== undefined) merged[idx] = mergeDeposit(existing, deposit);
+    } else merged.push(deposit);
   }
-  return [...byTx.values()];
+  return merged;
 }
 
 /** Best-effort v2 `spentDepositIndexes` → v3 `spentDepositRefs`. */
@@ -383,10 +480,19 @@ function migrateSpentRefs(
 function normalizeWalletState(value: unknown, version: number): WalletState {
   const validated = validateWalletStatePayload(value, version);
   const deposits = dedupeDepositsByTx(validated.deposits);
-  const spentDepositRefs =
+  let spentDepositRefs =
     version >= 3
       ? validated.spentDepositRefs
       : migrateSpentRefs(deposits, validated.spentDepositIndexes);
+  for (const deposit of deposits) {
+    if (deposit.txHash) {
+      spentDepositRefs = migrateSpentRefsForEnrichedHash(
+        spentDepositRefs,
+        deposit.globalIndex,
+        deposit.txHash,
+      );
+    }
+  }
   return {
     address: validated.address,
     scannedHeight: validated.scannedHeight,

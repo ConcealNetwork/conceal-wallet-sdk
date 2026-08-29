@@ -20,7 +20,7 @@ apps: next-wallet · mobile · lite                    ← UI only
 npm install conceal-wallet-sdk
 ```
 
-Runs in Node 20+, modern browsers, and any bundler (Vite/webpack/Next). lib-js is imported as a normal module — **no `window` globals**.
+Runs in Node 24+ (see **Development** below for Node 22), modern browsers, and any bundler (Vite/webpack/Next). lib-js is imported as a normal module — **no `window` globals**.
 
 ## Quick start
 
@@ -73,11 +73,17 @@ isValidAddress("ccx7…"); // boolean
 
 ## Development
 
+Requires **Node ≥ 24** (`package.json` `engines`; matches CI). Tests load `conceal-lib-js` WASM via native ESM imports — on **Node 22** you must enable experimental WASM modules or imports fail (~14 test files):
+
+```bash
+NODE_OPTIONS=--experimental-wasm-modules npm test
+```
+
 ```bash
 npm install
 npm run types   # tsc --noEmit
 npm run check   # biome lint + format
-npm test        # vitest
+npm test        # vitest (Node 24+)
 npm run build   # tsup → dist (esm + cjs + dts)
 ```
 
