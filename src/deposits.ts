@@ -314,15 +314,21 @@ export function isWithdrawShape(transaction: unknown, inputs: readonly RawDeposi
   return sumVoutAmount(transaction) > inPrincipal;
 }
 
-/** Stable deposit identity — wallet-core keys withdrawals on txHash + globalOutputIndex. */
+/**
+ * Legacy deposit-identity string (`txHash:globalIndex`) — wallet-core keys
+ * withdrawals on txHash + globalOutputIndex. Kept for consumers that label
+ * deposits with it; spent markers themselves use the canonical bare global
+ * index (see {@link findWithdrawnDepRefs} / `WalletState.spentDepositRefs`).
+ */
 export function depRef(deposit: Pick<OwnedDeposit, "txHash" | "globalIndex">): string {
   return `${deposit.txHash}:${deposit.globalIndex}`;
 }
 
 /**
- * Withdrawal detection: return deposit refs (`txHash:globalIndex`) this tx withdraws.
- * Mirrors wallet-core `Wallet.addWithdrawal`: match global `outputIndex` + principal
- * `amount`; skip entries already in `spentDepositRefs`.
+ * Withdrawal detection: return the canonical spent markers (the deposit's
+ * GLOBAL output index as a decimal string) for deposits this tx withdraws.
+ * Mirrors wallet-core `Wallet.addWithdrawal`: match global `outputIndex` +
+ * principal `amount`; skip markers already in `spentDepositRefs`.
  */
 export function findWithdrawnDepRefs(
   inputs: readonly RawDepositInput[],
@@ -338,15 +344,12 @@ export function findWithdrawnDepRefs(
     if (input?.type !== "input_to_deposit_key") continue;
     if (typeof input.outputIndex !== "number" || typeof input.amount !== "number") continue;
 
-    for (const deposit of ownedDeposits) {
-      const ref = depRef(deposit);
-      if (spent.has(ref)) continue;
-      if (withdrawn.includes(ref)) continue;
-      if (deposit.globalIndex !== input.outputIndex) continue;
-      if (deposit.amount !== input.amount) continue;
-      withdrawn.push(ref);
-      break;
-    }
+    const ref = String(input.outputIndex);
+    if (spent.has(ref) || withdrawn.includes(ref)) continue;
+    const owned = ownedDeposits.some(
+      (deposit) => deposit.globalIndex === input.outputIndex && deposit.amount === input.amount,
+    );
+    if (owned) withdrawn.push(ref);
   }
   return withdrawn;
 }
@@ -360,10 +363,9 @@ export function findWithdrawnDepositIndexes(
   ownedDeposits: readonly OwnedDeposit[],
   spentDepositRefs: readonly string[] = [],
 ): number[] {
-  return findWithdrawnDepRefs(inputs, ownedDeposits, spentDepositRefs).map((ref) => {
-    const deposit = ownedDeposits.find((d) => depRef(d) === ref);
-    return deposit?.globalIndex ?? Number.parseInt(ref.split(":")[1] ?? "0", 10);
-  });
+  return findWithdrawnDepRefs(inputs, ownedDeposits, spentDepositRefs).map((ref) =>
+    Number.parseInt(ref, 10),
+  );
 }
 
 /**

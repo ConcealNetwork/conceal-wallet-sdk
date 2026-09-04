@@ -4,7 +4,7 @@ import type { Account } from "../src/account";
 import { createMemoryStorage } from "../src/adapters";
 import { DEPOSIT_TX_FEE } from "../src/constants";
 import type { DaemonClient, DaemonRawTransaction } from "../src/daemon";
-import { calculateDepositInterest, depRef } from "../src/deposits";
+import { calculateDepositInterest } from "../src/deposits";
 import {
   createWalletSync,
   DEFAULT_STORAGE_KEY,
@@ -766,8 +766,7 @@ describe("createWalletSync.syncOnce — deposits", () => {
       return Promise.resolve(out);
     };
     state = await sync.syncOnce();
-    expect(state.spentDepositRefs).toContain(depRef(deposited));
-    expect(state.spentDepositRefs).toContain(`:${deposited.globalIndex}`);
+    expect(state.spentDepositRefs).toEqual([String(deposited.globalIndex)]);
     expect(getUnlockedDeposits(state, withdrawTx.height as number)).toHaveLength(0);
   });
 
@@ -838,7 +837,6 @@ describe("createWalletSync.syncOnce — deposits", () => {
       return Promise.resolve(out);
     };
     state = await sync.syncOnce();
-    expect(state.spentDepositRefs).toContain(depRef(deposited));
-    expect(state.spentDepositRefs).toContain(`:${deposited.globalIndex}`);
+    expect(state.spentDepositRefs).toEqual([String(deposited.globalIndex)]);
   });
 });

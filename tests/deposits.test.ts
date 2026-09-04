@@ -11,7 +11,6 @@ import {
 import { cnutils } from "../src/crypto";
 import {
   calculateDepositInterest,
-  depRef,
   findWithdrawnDepositIndexes,
   findWithdrawnDepRefs,
   isWithdrawShape,
@@ -772,11 +771,10 @@ describe("deposit scan + wallet state", () => {
     expect(deposit).toBeDefined();
     if (deposit === undefined) return;
     const withdrawn = findWithdrawnDepRefs(withdrawInputs, state.deposits);
-    expect(withdrawn).toEqual([depRef(deposit)]);
+    expect(withdrawn).toEqual([String(deposit.globalIndex)]);
 
     state = applyScannedDeposits(state, [], withdrawn);
-    expect(state.spentDepositRefs).toContain(depRef(deposit));
-    expect(state.spentDepositRefs).toContain(`:${deposit.globalIndex}`);
+    expect(state.spentDepositRefs).toEqual([String(deposit.globalIndex)]);
   });
 
   it("another user's unlock (non-owned global index) does not mark our deposit spent", () => {
@@ -870,7 +868,7 @@ describe("deposit scan + wallet state", () => {
     const deposit = deposits[0];
     expect(deposit).toBeDefined();
     if (deposit === undefined) return;
-    const ref = depRef(deposit);
+    const ref = String(deposit.globalIndex);
     state = applyScannedDeposits(state, [], [ref]);
     expect(getUnlockedDeposits(state, unlockHeight)).toHaveLength(0);
     expect(getLockedDeposits(state, unlockHeight)).toHaveLength(0);
@@ -949,7 +947,7 @@ describe("WalletState v1 → v2 deserialize", () => {
       },
     });
     const state = deserializeWalletState(v2Blob);
-    expect(state.spentDepositRefs).toEqual([depRef(deposit)]);
+    expect(state.spentDepositRefs).toEqual(["777"]);
   });
 
   it("round-trips a v2 state with deposits", () => {
@@ -1055,7 +1053,7 @@ describe("WalletState v1 → v2 deserialize", () => {
     expect(state.deposits[0]?.globalIndex).toBe(42);
   });
 
-  it("heals hash/empty-hash twins on deserialize and migrates spentDepositRefs", () => {
+  it("normalizes a v0.2.14 blob with hash/empty-hash alias twins on deserialize", () => {
     const hash = "ef".repeat(32);
     const base = {
       amount: 1e10,
@@ -1079,16 +1077,56 @@ describe("WalletState v1 → v2 deserialize", () => {
         spentKeyImages: [],
         transactions: [],
         deposits: [emptyTwin, hashTwin],
-        spentDepositRefs: [":42"],
+        spentDepositRefs: [`${hash}:42`, ":42"],
       },
     });
     const state = deserializeWalletState(blob);
     expect(state.deposits).toHaveLength(1);
     expect(state.deposits[0]?.txHash).toBe(hash);
-    expect(state.spentDepositRefs).toEqual([`${hash}:42`]);
+    // Both alias twins collapse into the one canonical global-index marker.
+    expect(state.spentDepositRefs).toEqual(["42"]);
+    // The migrated marker keeps the deposit withdrawn.
+    expect(getUnlockedDeposits(state, 413401 + 21900)).toHaveLength(0);
+    expect(getLockedDeposits(state, 413401 + 21900)).toHaveLength(0);
   });
 
-  it("withdrawal marks every ref alias so empty-hash twins cannot stay unlocked", () => {
+  it("normalizes legacy `:index` and `hash:index` spent refs from older blobs", () => {
+    const hash = "ef".repeat(32);
+    const deposit: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 42,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 21900,
+      blockHeight: 413401,
+      txHash: hash,
+      interest: 32_500_000,
+      unlockHeight: 413401 + 21900,
+    };
+    for (const legacyRefs of [[`:42`], [`${hash}:42`]]) {
+      const blob = JSON.stringify({
+        version: 3,
+        state: {
+          address: "ccx7test",
+          scannedHeight: 100,
+          outputs: [],
+          spentKeyImages: [],
+          transactions: [],
+          deposits: [deposit],
+          spentDepositRefs: legacyRefs,
+        },
+      });
+      const state = deserializeWalletState(blob);
+      expect(state.spentDepositRefs).toEqual(["42"]);
+      expect(getUnlockedDeposits(state, 413401 + 21900)).toHaveLength(0);
+      const reserialized = deserializeWalletState(serializeWalletState(state));
+      expect(reserialized.spentDepositRefs).toEqual(["42"]);
+    }
+  });
+
+  it("a canonical withdrawal marker keeps hash-enriched empty-hash twins withdrawn", () => {
     const hash = "ef".repeat(32);
     const unlockHeight = 413401 + 21900;
     const deposit: OwnedDeposit = {
@@ -1106,12 +1144,16 @@ describe("WalletState v1 → v2 deserialize", () => {
     };
     let state = createWalletState({ address: "ccx7test", keys: undefined as never });
     state = applyScannedDeposits(state, [deposit]);
-    state = applyScannedDeposits(state, [{ ...deposit, txHash: hash }]);
-    expect(state.deposits).toHaveLength(1);
-
-    state = applyScannedDeposits(state, [], [`${hash}:42`]);
+    state = applyScannedDeposits(state, [], ["42"]);
     expect(getUnlockedDeposits(state, unlockHeight)).toHaveLength(0);
     expect(getLockedDeposits(state, unlockHeight)).toHaveLength(0);
+
+    // A later rescan enriches txHash; the spent marker survives unchanged.
+    state = applyScannedDeposits(state, [{ ...deposit, txHash: hash }]);
+    expect(state.deposits).toHaveLength(1);
+    expect(state.deposits[0]?.txHash).toBe(hash);
+    expect(state.spentDepositRefs).toEqual(["42"]);
+    expect(getUnlockedDeposits(state, unlockHeight)).toHaveLength(0);
   });
 
   it("still dedupes deposits sharing the same non-empty txHash", () => {
