@@ -187,7 +187,10 @@ function calculateInterestV2(amount: number, term: number): number {
     // Bound is DEPOSIT_MAX_TERM_V1 = 64800 * 20 (CryptoNoteConfig.h), not DEPOSIT_MAX_TERM.
     // term === 0 hits this branch (0 % 64800 === 0) when lockHeight ≤ V3 height; C++ pow
     // yields m8=0 → interest 0. Return 0 so scanDepositOutput never aborts.
-    // termQuarters > 20: C++ would still run pow(k) (no clamp in calculateInterest); consensus
+// termQuarters > 20: daemon clamps term to DEPOSIT_MAX_TERM_V1 before dispatch
+// (defense-in-depth in calculateInterest) and getInterestForInput 0-returns
+// over-max terms, so C++ never evaluates pow(k) for k > 20; consensus also
+// rejects those outs at accept time. We have no table entry — fail closed with throw.
     // rejects those outs at accept time. We have no table entry — fail closed with throw.
     const termQuarters = Math.trunc(term / 64800);
     if (termQuarters === 0) return 0;
