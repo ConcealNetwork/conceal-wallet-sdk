@@ -6,15 +6,12 @@
  * tools/interest-parity/gen_interest.cpp) and asserts each case against
  * calculateDepositInterest().
  *
- * ## Expected test status (post float32 rewrite of V3)
+ * ## Expected test status (post float32 rewrite)
  *
- * GREEN: V1 (BigInt path) and all V3 (float32 rewrite matches daemon exactly).
- *   Historical note: before the float32 rewrite, V3 used float64 and diverged,
- *   e.g. v3-6mo-20k returned 539_999_999 instead of 540_000_000.
- *
- * GREEN: V1 (BigInt path), all V3 (float32 rewrite), and all V2i (float32 table rewrite).
- *   Historical note: before the V2i float32 rewrite, v2i-1q-50k returned 727_268_249
- *   instead of 727_268_224 (C++ daemon float32 value).
+ * GREEN: V1 (BigInt), V3 (float32), V2i (float32 + m8 table), V2w (float32).
+ *   Historical notes: before the rewrite, V3 e.g. v3-6mo-20k returned 539_999_999
+ *   instead of 540_000_000; V2i e.g. v2i-1q-50k returned 727_268_249 instead of
+ *   727_268_224 (daemon float32).
  */
 
 import { readFileSync } from "node:fs";
@@ -104,12 +101,11 @@ describe("interest-parity V1 — JS BigInt matches C++ (expected GREEN)", () => 
 });
 
 // ---------------------------------------------------------------------------
-// V3 parity — float32 vs float64 divergence (ALL V3 cases are RED)
+// V3 parity — float32 rewrite matches daemon
 //
-// The 540_000_000 case (v3-6mo-20k) is the canonical float32 proof:
+// Canonical proof case v3-6mo-20k:
 //   C++ float32 → 540_000_000   (float32(2e10) * float32(0.027) rounds up)
 //   JS  float64 → 539_999_999   (historical; fixed by float32 rewrite)
-// All V3 cases are now GREEN after the float32 rewrite.
 // ---------------------------------------------------------------------------
 
 describe("interest-parity V3 — float32 rewrite matches C++ daemon [GREEN]", () => {
@@ -128,7 +124,7 @@ describe("interest-parity V3 — float32 rewrite matches C++ daemon [GREEN]", ()
 });
 
 // ---------------------------------------------------------------------------
-// V2i parity — quarterly investments (RED — float32 drift in m8/m7/rate/interest)
+// V2i parity — quarterly investments (float32 + m8 table)
 // ---------------------------------------------------------------------------
 
 describe("interest-parity V2i — quarterly investment [GREEN]", () => {
@@ -147,10 +143,10 @@ describe("interest-parity V2i — quarterly investment [GREEN]", () => {
 });
 
 // ---------------------------------------------------------------------------
-// V2w parity — weekly deposits (RED for most — float32 drift)
+// V2w parity — weekly deposits (GREEN after float32 rewrite)
 // ---------------------------------------------------------------------------
 
-describe("interest-parity V2w — weekly deposits [RED EXPECTED for most]", () => {
+describe("interest-parity V2w — weekly deposits [GREEN]", () => {
   const v2wCases = fixture.cases.filter((c) => c.version === "V2w");
 
   for (const c of v2wCases) {

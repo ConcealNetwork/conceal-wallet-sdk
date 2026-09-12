@@ -23,11 +23,10 @@ import {
  * (principal + interest) by spending it through a type-`03` `input_to_deposit_key`
  * input. This module holds:
  *
- *  - {@link calculateDepositInterest} — a VERBATIM, bit-exact port of the legacy
- *    `InterestCalculator.calculateInterest` (`lib/wallet-core/Interest.ts`). Interest
- *    determines real withdrawal amounts, so the float operations and `Math.floor`
- *    (V3/V2) and the `BigInt` truncating divide (V1) are reproduced EXACTLY — do not
- *    "simplify" the arithmetic or its evaluation order.
+ *  - {@link calculateDepositInterest} — float32 op-for-op mirror of Conceal daemon
+ *    `Currency.cpp` (`calculateInterest` / V2 / V3) plus the V1 BigInt truncating
+ *    divide. Interest determines real withdrawal amounts; the float op order and
+ *    truncation are load-bearing — do not "simplify" the arithmetic.
  *  - {@link OwnedDeposit} — a detected, owned deposit recovered during scanning.
  *  - {@link scanDepositOutput} — recover an `OwnedDeposit` from an owned type-`03`
  *    output (mirrors `TransactionsExplorer.parse` deposit detection).
@@ -48,7 +47,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Interest (VERBATIM port of Interest.ts — bit-exact with the daemon)
+// Interest (daemon Currency.cpp float32 / BigInt parity)
 // ---------------------------------------------------------------------------
 
 /** Inputs to {@link calculateDepositInterest}. All atomic units / blocks. */
@@ -63,17 +62,17 @@ export interface DepositInterestInput {
 
 /**
  * Calculate the interest (atomic units) a deposit earns, given its principal `amount`
+ * Float32 / BigInt mirror of Conceal daemon `Currency::calculateInterest*` for
  * (atomic), `term` (blocks) and `lockHeight` (deposit block height).
  *
- * VERBATIM port of `InterestCalculator.calculateInterest` (`Interest.ts:60-97`),
- * preserving the exact dispatch and arithmetic:
+ * Dispatch (same order as Currency.cpp):
  *  1. `lockHeight === 425799` ⇒ `lockHeight += term` (BLOCK_WITH_MISSING_INTEREST).
  *  2. V3 (monthly) if `term % 21900 === 0 && lockHeight > 413400`.
  *  3. V2 (investment/weekly) if `term % 64800 === 0 || term % 5040 === 0`.
  *  4. V1 (legacy fallback) otherwise — BigInt truncating divide.
  *
  * This determines real withdrawal amounts; the float op order is load-bearing and must
- * not be altered. V3 and V2i use float32 (Math.fround) + Math.trunc; V1 uses BigInt.
+ * not be altered. V3 / V2i / V2w use float32 (Math.fround) + Math.trunc; V1 uses BigInt.
  */
 export function calculateDepositInterest(input: DepositInterestInput): number {
   const { amount, term } = input;
