@@ -10,9 +10,7 @@ import {
   DEPOSIT_MIN_TERM,
   DEPOSIT_MIN_TERM_V3,
   DEPOSIT_MIN_TOTAL_RATE_FACTOR,
-  DEPOSIT_RATE_V3,
   END_MULTIPLIER_BLOCK,
-  INVESTMENT_MQ,
   MULTIPLIER_FACTOR,
   WEEKLY_BASE_INTEREST,
   WEEKLY_INTEREST_INCREMENT,
@@ -25,11 +23,10 @@ import {
  * (principal + interest) by spending it through a type-`03` `input_to_deposit_key`
  * input. This module holds:
  *
- *  - {@link calculateDepositInterest} — a VERBATIM, bit-exact port of the legacy
- *    `InterestCalculator.calculateInterest` (`lib/wallet-core/Interest.ts`). Interest
- *    determines real withdrawal amounts, so the float operations and `Math.floor`
- *    (V3/V2) and the `BigInt` truncating divide (V1) are reproduced EXACTLY — do not
- *    "simplify" the arithmetic or its evaluation order.
+ *  - {@link calculateDepositInterest} — float32 op-for-op mirror of Conceal daemon
+ *    `Currency.cpp` (`calculateInterest` / V2 / V3) plus the V1 BigInt truncating
+ *    divide. Interest determines real withdrawal amounts; the float op order and
+ *    truncation are load-bearing — do not "simplify" the arithmetic.
  *  - {@link OwnedDeposit} — a detected, owned deposit recovered during scanning.
  *  - {@link scanDepositOutput} — recover an `OwnedDeposit` from an owned type-`03`
  *    output (mirrors `TransactionsExplorer.parse` deposit detection).
@@ -41,6 +38,7 @@ import {
  * serializer; this module is the interest + scan + type half.
  */
 import { derivePublicKey, generateKeyDerivation } from "./crypto";
+import { INVESTMENT_M8 } from "./deposits/investment-m8";
 import { parseDaemonNum } from "./tx-shape";
 import type { Hex, WalletKeys } from "./types";
 
@@ -49,7 +47,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Interest (VERBATIM port of Interest.ts — bit-exact with the daemon)
+// Interest (daemon Currency.cpp float32 / BigInt parity)
 // ---------------------------------------------------------------------------
 
 /** Inputs to {@link calculateDepositInterest}. All atomic units / blocks. */
@@ -64,17 +62,17 @@ export interface DepositInterestInput {
 
 /**
  * Calculate the interest (atomic units) a deposit earns, given its principal `amount`
+ * Float32 / BigInt mirror of Conceal daemon `Currency::calculateInterest*` for
  * (atomic), `term` (blocks) and `lockHeight` (deposit block height).
  *
- * VERBATIM port of `InterestCalculator.calculateInterest` (`Interest.ts:60-97`),
- * preserving the exact dispatch and arithmetic:
+ * Dispatch (same order as Currency.cpp):
  *  1. `lockHeight === 425799` ⇒ `lockHeight += term` (BLOCK_WITH_MISSING_INTEREST).
  *  2. V3 (monthly) if `term % 21900 === 0 && lockHeight > 413400`.
  *  3. V2 (investment/weekly) if `term % 64800 === 0 || term % 5040 === 0`.
  *  4. V1 (legacy fallback) otherwise — BigInt truncating divide.
  *
- * This determines real withdrawal amounts; the float op order and `Math.floor` are
- * load-bearing and must not be altered.
+ * This determines real withdrawal amounts; the float op order is load-bearing and must
+ * not be altered. V3 / V2i / V2w use float32 (Math.fround) + Math.trunc; V1 uses BigInt.
  */
 export function calculateDepositInterest(input: DepositInterestInput): number {
   const { amount, term } = input;
@@ -109,86 +107,134 @@ export function calculateDepositInterest(input: DepositInterestInput): number {
   return lockHeight <= END_MULTIPLIER_BLOCK ? base * MULTIPLIER_FACTOR : base;
 }
 
-/** V3 deposits (monthly terms). Verbatim from `Interest.ts:105-136`. */
+/**
+ * V3 deposits (monthly terms).
+ * Float32 op-for-op mirror of Currency.cpp `calculateInterestV3`:
+ *   - amount4Humans: integer divide (uint64 ÷ uint64 in C++)
+ *   - baseInterest: static_cast<float>(literal) → Math.fround
+ *   - months: integer divide first, then cast to float32
+ *   - ear, eir, interest: each intermediate result flushed to float32 via Math.fround
+ *   - return: Math.trunc (C++ static_cast<uint64_t> truncates toward zero)
+ */
 function calculateInterestV3(amount: number, term: number): number {
-  const m_coin = 10 ** COIN_UNIT_PLACES;
+  const m_coin = 10 ** COIN_UNIT_PLACES; // 1_000_000
 
-  const amount4Humans = amount / m_coin;
+  // C++: uint64_t amount4Humans = amount / m_coin  (integer division)
+  const amount4Humans = Math.trunc(amount / m_coin);
 
-  // Base interest rates depending on amount tiers
-  let baseInterest = DEPOSIT_RATE_V3[0] || 0.029; // Basic rate for amounts < 10000
+  // C++: auto baseInterest = static_cast<float>(0.029); (sequential if, not else-if)
+  let baseInterest = Math.fround(0.029);
+  if (amount4Humans >= 10000 && amount4Humans < 20000) baseInterest = Math.fround(0.039);
+  if (amount4Humans >= 20000) baseInterest = Math.fround(0.049);
 
-  if (amount4Humans >= 20000) {
-    baseInterest = DEPOSIT_RATE_V3[2] || 0.049; // Highest rate for amounts >= 20000
-  } else if (amount4Humans >= 10000) {
-    baseInterest = DEPOSIT_RATE_V3[1] || 0.039; // Medium rate for amounts between 10000-20000
-  }
-
-  // Calculate months
-  let months = term / DEPOSIT_MIN_TERM_V3;
+  // C++: auto months = static_cast<float>(term / m_depositMinTermV3)  (int÷ then float32)
+  let months = Math.fround(Math.trunc(term / DEPOSIT_MIN_TERM_V3));
   if (months > 12) {
-    months = 12; // Cap at 12 months
+    months = 12;
   }
 
-  // Calculate effective annual rate with term bonus
-  const ear = baseInterest + (months - 1) * 0.001;
+  // C++: float ear = baseInterest + (months - 1) * 0.001f
+  const ear = Math.fround(baseInterest + Math.fround((months - 1) * Math.fround(0.001)));
 
-  // Calculate effective interest rate for the period
-  const eir = (ear / 12) * months;
+  // C++: float eir = (ear / 12) * months
+  const eir = Math.fround(Math.fround(ear / 12) * months);
 
-  // Calculate interest
-  const interest = amount * eir;
+  // C++: float interest = static_cast<float>(amount) * eir
+  const interest = Math.fround(Math.fround(amount) * eir);
 
-  return Math.floor(interest);
+  // C++: return static_cast<uint64_t>(interest)  (truncation toward zero)
+  return Math.trunc(interest);
 }
 
-/** V2 deposits (investment or weekly terms). Verbatim from `Interest.ts:144-194`. */
+/**
+ * V2 deposits (investment or weekly terms).
+ *
+ * Investment branch: float32 op-for-op mirror of Currency.cpp `calculateInterestV2`:
+ *   - amount4Humans: integer divide (Math.trunc)
+ *   - qTier: float32 literal (static_cast<float>); first tier uses > not >= for 110000
+ *   - m8: pre-computed float32 from INVESTMENT_M8 table (no Math.pow)
+ *   - m5, m7, rate, interest: each flushed to float32 via Math.fround
+ *   - return: Math.trunc (C++ static_cast<uint64_t> truncates toward zero)
+ *
+ * Weekly branch: unchanged float32 mirror of Currency.cpp weekly sub-branch.
+ */
 function calculateInterestV2(amount: number, term: number): number {
-  const m_coin = 10 ** COIN_UNIT_PLACES;
-
   // Investment term (64800 blocks - quarterly)
   if (term % 64800 === 0) {
-    const amount4Humans = amount / m_coin;
+    // C++: uint64_t amount4Humans = amount / 1000000ULL  (integer division)
+    const amount4Humans = Math.trunc(amount / 1000000);
 
-    // Quantity tier bonus - exact same tiers as in C++ code
-    let qTier = 1;
-    if (amount4Humans > 110000 && amount4Humans < 180000) qTier = 1.01;
-    if (amount4Humans >= 180000 && amount4Humans < 260000) qTier = 1.02;
-    if (amount4Humans >= 260000 && amount4Humans < 350000) qTier = 1.03;
-    if (amount4Humans >= 350000 && amount4Humans < 450000) qTier = 1.04;
-    if (amount4Humans >= 450000 && amount4Humans < 560000) qTier = 1.05;
-    if (amount4Humans >= 560000 && amount4Humans < 680000) qTier = 1.06;
-    if (amount4Humans >= 680000 && amount4Humans < 810000) qTier = 1.07;
-    if (amount4Humans >= 810000 && amount4Humans < 950000) qTier = 1.08;
-    if (amount4Humans >= 950000 && amount4Humans < 1100000) qTier = 1.09;
-    if (amount4Humans >= 1100000 && amount4Humans < 1260000) qTier = 1.1;
-    if (amount4Humans >= 1260000 && amount4Humans < 1430000) qTier = 1.11;
-    if (amount4Humans >= 1430000 && amount4Humans < 1610000) qTier = 1.12;
-    if (amount4Humans >= 1610000 && amount4Humans < 1800000) qTier = 1.13;
-    if (amount4Humans >= 1800000 && amount4Humans < 2000000) qTier = 1.14;
-    if (amount4Humans > 2000000) qTier = 1.15;
+    // Quantity tier bonus — mirrors C++ `float qTier` with static_cast<float> literals.
+    // First tier uses > (exclusive lower); last uses > (exclusive lower).
+    let qTier = Math.fround(1.0);
+    if (amount4Humans > 110000 && amount4Humans < 180000) qTier = Math.fround(1.01);
+    if (amount4Humans >= 180000 && amount4Humans < 260000) qTier = Math.fround(1.02);
+    if (amount4Humans >= 260000 && amount4Humans < 350000) qTier = Math.fround(1.03);
+    if (amount4Humans >= 350000 && amount4Humans < 450000) qTier = Math.fround(1.04);
+    if (amount4Humans >= 450000 && amount4Humans < 560000) qTier = Math.fround(1.05);
+    if (amount4Humans >= 560000 && amount4Humans < 680000) qTier = Math.fround(1.06);
+    if (amount4Humans >= 680000 && amount4Humans < 810000) qTier = Math.fround(1.07);
+    if (amount4Humans >= 810000 && amount4Humans < 950000) qTier = Math.fround(1.08);
+    if (amount4Humans >= 950000 && amount4Humans < 1100000) qTier = Math.fround(1.09);
+    if (amount4Humans >= 1100000 && amount4Humans < 1260000) qTier = Math.fround(1.1);
+    if (amount4Humans >= 1260000 && amount4Humans < 1430000) qTier = Math.fround(1.11);
+    if (amount4Humans >= 1430000 && amount4Humans < 1610000) qTier = Math.fround(1.12);
+    if (amount4Humans >= 1610000 && amount4Humans < 1800000) qTier = Math.fround(1.13);
+    if (amount4Humans >= 1800000 && amount4Humans < 2000000) qTier = Math.fround(1.14);
+    if (amount4Humans > 2000000) qTier = Math.fround(1.15);
 
-    // Investment calculation - same as C++ implementation
-    const mq = INVESTMENT_MQ; // From C++ code
-    const termQuarters = term / 64800;
-    const m8 = 100.0 * (1.0 + mq / 100.0) ** termQuarters - 100.0;
-    const m5 = termQuarters * 0.5;
-    const m7 = m8 * (1 + m5 / 100);
-    const rate = m7 * qTier;
-    const interest = amount * (rate / 100);
+    // Look up pre-computed float32 m8 from INVESTMENT_M8 table.
+    // Bound is DEPOSIT_MAX_TERM_V1 = 64800 * 20 (CryptoNoteConfig.h), not DEPOSIT_MAX_TERM.
+    // term === 0 hits this branch (0 % 64800 === 0) when lockHeight ≤ V3 height; C++ pow
+    // yields m8=0 → interest 0. Return 0 so scanDepositOutput never aborts.
+    // termQuarters > 20: C++ would still run pow(k) (no clamp in calculateInterest); consensus
+    // rejects those outs at accept time. We have no table entry — fail closed with throw.
+    const termQuarters = Math.trunc(term / 64800);
+    if (termQuarters === 0) return 0;
+    if (termQuarters > 20) {
+      throw new Error(`V2i: termQuarters ${termQuarters} out of range 1..20`);
+    }
 
-    return Math.floor(interest);
+    const entry = INVESTMENT_M8.find((e) => e.quarter === termQuarters);
+    if (!entry) {
+      // Unreachable for 1..20 with a complete table; keep a hard fail for table corruption.
+      throw new Error(`V2i: missing INVESTMENT_M8 entry for quarter ${termQuarters}`);
+    }
+
+    // Float32 op-for-op mirror of Currency.cpp investment branch:
+    //   float m5 = termQuarters * 0.5f;
+    //   float m7 = m8 * (1.0f + (m5 / 100.0f));
+    //   float rate = m7 * qTier;
+    //   float interest = static_cast<float>(amount) * (rate / 100.0f);
+    //   return static_cast<uint64_t>(interest);
+    const m8 = entry.m8; // already float32 (stored via Math.fround in the table)
+    const m5 = Math.fround(termQuarters * Math.fround(0.5));
+    const m7 = Math.fround(m8 * Math.fround(1.0 + Math.fround(m5 / Math.fround(100.0))));
+    const rate = Math.fround(m7 * qTier);
+    const interest = Math.fround(Math.fround(amount) * Math.fround(rate / Math.fround(100.0)));
+    return Math.trunc(interest);
   }
 
   // Weekly deposits (5040 blocks)
+  // Float32 op-for-op mirror of Currency.cpp calculateInterestV2 weekly branch:
+  //   auto actualAmount = static_cast<float>(amount);
+  //   float weeks = term / 5040;  // int÷ → then cast to float
+  //   auto baseInterest = static_cast<float>(0.0696);
+  //   auto interestPerWeek = static_cast<float>(0.0002);
+  //   float interestRate = baseInterest + (weeks * interestPerWeek);
+  //   float interest = actualAmount * ((weeks * interestRate) / 100);
+  //   returnVal = static_cast<uint64_t>(interest);
   if (term % DEPOSIT_MIN_TERM === 0) {
-    const weeks = term / DEPOSIT_MIN_TERM;
-    const baseInterest = WEEKLY_BASE_INTEREST; // Base weekly interest rate
-    const interestPerWeek = WEEKLY_INTEREST_INCREMENT; // Additional interest per week
-    const interestRate = baseInterest + weeks * interestPerWeek;
-    const interest = amount * ((weeks * interestRate) / 100);
+    const actualAmount = Math.fround(amount);
+    const weeks = Math.fround(Math.trunc(term / DEPOSIT_MIN_TERM));
+    const baseInterest = Math.fround(WEEKLY_BASE_INTEREST);
+    const interestPerWeek = Math.fround(WEEKLY_INTEREST_INCREMENT);
+    const interestRate = Math.fround(baseInterest + Math.fround(weeks * interestPerWeek));
+    const interest = Math.fround(
+      actualAmount * Math.fround(Math.fround(weeks * interestRate) / 100),
+    );
 
-    return Math.floor(interest);
+    return Math.trunc(interest);
   }
 
   return 0;
@@ -370,6 +416,15 @@ export function findWithdrawnDepositIndexes(
  * Validate that a deposit's stored `interest` matches a fresh computation from its
  * principal/term/height — a cheap integrity guard against tampered/persisted state
  * before it feeds a real withdrawal amount. Returns the recomputed interest.
+ *
+ * **Single-path invariant:** all three callers that derive or verify deposit interest
+ * ultimately funnel through {@link calculateDepositInterest}:
+ *  - {@link scanDepositOutput} sets `OwnedDeposit.interest` via `calculateDepositInterest` directly.
+ *  - `recomputeDepositInterest` (this function) recomputes it via `calculateDepositInterest` directly.
+ *  - `buildWithdrawTransaction` re-derives interest by calling `recomputeDepositInterest`,
+ *    which in turn calls `calculateDepositInterest`.
+ * There is exactly one arithmetic path for deposit interest; adding a new caller MUST go
+ * through `recomputeDepositInterest` (or `calculateDepositInterest` directly) — never inline.
  */
 export function recomputeDepositInterest(deposit: OwnedDeposit): number {
   return calculateDepositInterest({

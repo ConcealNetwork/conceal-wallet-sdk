@@ -1,0 +1,189 @@
+{
+  "source": "tools/interest-parity/gen_interest.cpp",
+  "cases": [
+    {
+      "id": "v3-1mo-5k",
+      "version": "V3",
+      "amount": 5000000000,
+      "term": 21900,
+      "lockHeight": 500000,
+      "expectedInterest": 12083333
+    },
+    {
+      "id": "v3-6mo-5k",
+      "version": "V3",
+      "amount": 5000000000,
+      "term": 131400,
+      "lockHeight": 500000,
+      "expectedInterest": 84999992
+    },
+    {
+      "id": "v3-12mo-5k",
+      "version": "V3",
+      "amount": 5000000000,
+      "term": 262800,
+      "lockHeight": 500000,
+      "expectedInterest": 200000000
+    },
+    {
+      "id": "v3-1mo-15k",
+      "version": "V3",
+      "amount": 15000000000,
+      "term": 21900,
+      "lockHeight": 500000,
+      "expectedInterest": 48750004
+    },
+    {
+      "id": "v3-6mo-15k",
+      "version": "V3",
+      "amount": 15000000000,
+      "term": 131400,
+      "lockHeight": 500000,
+      "expectedInterest": 330000000
+    },
+    {
+      "id": "v3-1mo-20k",
+      "version": "V3",
+      "amount": 20000000000,
+      "term": 21900,
+      "lockHeight": 500000,
+      "expectedInterest": 81666664
+    },
+    {
+      "id": "v3-6mo-20k",
+      "version": "V3",
+      "amount": 20000000000,
+      "term": 131400,
+      "lockHeight": 500000,
+      "expectedInterest": 540000000
+    },
+    {
+      "id": "v3-12mo-20k",
+      "version": "V3",
+      "amount": 20000000000,
+      "term": 262800,
+      "lockHeight": 500000,
+      "expectedInterest": 1200000000
+    },
+    {
+      "id": "v3-12mo-100k",
+      "version": "V3",
+      "amount": 100000000000,
+      "term": 262800,
+      "lockHeight": 500000,
+      "expectedInterest": 5999999488
+    },
+    {
+      "id": "v3-11mo-21256",
+      "version": "V3",
+      "amount": 21256000000,
+      "term": 240900,
+      "lockHeight": 500000,
+      "expectedInterest": 1149595264
+    },
+    {
+      "id": "v2i-1q-50k",
+      "version": "V2i",
+      "amount": 50000000000,
+      "term": 64800,
+      "lockHeight": 500000,
+      "expectedInterest": 727268224
+    },
+    {
+      "id": "v2i-4q-50k",
+      "version": "V2i",
+      "amount": 50000000000,
+      "term": 259200,
+      "lockHeight": 500000,
+      "expectedInterest": 3017209856
+    },
+    {
+      "id": "v2i-2q-200k",
+      "version": "V2i",
+      "amount": 200000000000,
+      "term": 129600,
+      "lockHeight": 500000,
+      "expectedInterest": 6007192064
+    },
+    {
+      "id": "v2i-4q-1M",
+      "version": "V2i",
+      "amount": 1000000000000,
+      "term": 259200,
+      "lockHeight": 500000,
+      "expectedInterest": 65775177728
+    },
+    {
+      "id": "v2i-4q-3M",
+      "version": "V2i",
+      "amount": 3000000000000,
+      "term": 259200,
+      "lockHeight": 500000,
+      "expectedInterest": 208187473920
+    },
+    {
+      "id": "v2w-1wk-50k",
+      "version": "V2w",
+      "amount": 50000000000,
+      "term": 5040,
+      "lockHeight": 500000,
+      "expectedInterest": 34900000
+    },
+    {
+      "id": "v2w-4wk-50k",
+      "version": "V2w",
+      "amount": 50000000000,
+      "term": 20160,
+      "lockHeight": 500000,
+      "expectedInterest": 140800000
+    },
+    {
+      "id": "v2w-13wk-50k",
+      "version": "V2w",
+      "amount": 50000000000,
+      "term": 65520,
+      "lockHeight": 500000,
+      "expectedInterest": 469300000
+    },
+    {
+      "id": "v2w-52wk-50k",
+      "version": "V2w",
+      "amount": 50000000000,
+      "term": 262080,
+      "lockHeight": 500000,
+      "expectedInterest": 2080000000
+    },
+    {
+      "id": "v1-mult-1k",
+      "version": "V1",
+      "amount": 1000000000,
+      "term": 21900,
+      "lockHeight": 5000,
+      "expectedInterest": 333333300
+    },
+    {
+      "id": "v1-nomult-1k",
+      "version": "V1",
+      "amount": 1000000000,
+      "term": 21900,
+      "lockHeight": 20000,
+      "expectedInterest": 3333333
+    },
+    {
+      "id": "v1-mult-10k",
+      "version": "V1",
+      "amount": 10000000000,
+      "term": 21900,
+      "lockHeight": 5000,
+      "expectedInterest": 3333333300
+    },
+    {
+      "id": "v1-nomult-10k",
+      "version": "V1",
+      "amount": 10000000000,
+      "term": 21900,
+      "lockHeight": 20000,
+      "expectedInterest": 33333333
+    }
+  ]
+}
