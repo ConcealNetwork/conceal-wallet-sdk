@@ -185,11 +185,21 @@ function calculateInterestV2(amount: number, term: number): number {
     if (amount4Humans > 2000000) qTier = Math.fround(1.15);
 
     // Look up pre-computed float32 m8 from INVESTMENT_M8 table.
-    // termQuarters must be in 1..20 (DEPOSIT_MAX_TERM / 64800 = 20).
+    // Bound is DEPOSIT_MAX_TERM_V1 = 64800 * 20 (CryptoNoteConfig.h), not DEPOSIT_MAX_TERM.
+    // term === 0 hits this branch (0 % 64800 === 0) when lockHeight ≤ V3 height; C++ pow
+    // yields m8=0 → interest 0. Return 0 so scanDepositOutput never aborts.
+    // termQuarters > 20: C++ would still run pow(k) (no clamp in calculateInterest); consensus
+    // rejects those outs at accept time. We have no table entry — fail closed with throw.
     const termQuarters = Math.trunc(term / 64800);
+    if (termQuarters === 0) return 0;
+    if (termQuarters > 20) {
+      throw new Error(`V2i: termQuarters ${termQuarters} out of range 1..20`);
+    }
+
     const entry = INVESTMENT_M8.find((e) => e.quarter === termQuarters);
     if (!entry) {
-      throw new Error(`V2i: termQuarters ${termQuarters} out of range 1..20`);
+      // Unreachable for 1..20 with a complete table; keep a hard fail for table corruption.
+      throw new Error(`V2i: missing INVESTMENT_M8 entry for quarter ${termQuarters}`);
     }
 
     // Float32 op-for-op mirror of Currency.cpp investment branch:

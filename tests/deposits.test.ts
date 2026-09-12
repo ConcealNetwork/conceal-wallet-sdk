@@ -189,6 +189,21 @@ describe("calculateDepositInterest — dispatch + V2/V1", () => {
     expect(calculateDepositInterest({ amount, term, lockHeight: 500000 })).toBe(expected);
   });
 
+  it("V2i term === 0 (pre-V3 height) returns 0 instead of throwing", () => {
+    // 0 % 64800 === 0 routes to investment; scan must not abort on term-0 multisig outs.
+    expect(calculateDepositInterest({ amount: 1e9, term: 0, lockHeight: 300_000 })).toBe(0);
+  });
+
+  it("V2i termQuarters > 20 throws (no table; C++ would pow, consensus rejects)", () => {
+    expect(() =>
+      calculateDepositInterest({
+        amount: 50_000 * 1_000_000,
+        term: 64800 * 21,
+        lockHeight: 300_000,
+      }),
+    ).toThrow(/termQuarters 21 out of range 1\.\.20/);
+  });
+
   it("V1 fallback uses the BigInt truncating divide (term not a 5040/21900/64800 multiple)", () => {
     // term=300: 300%5040!=0, 300%21900!=0, 300%64800!=0 → V1.
     const amount = 1e9;
