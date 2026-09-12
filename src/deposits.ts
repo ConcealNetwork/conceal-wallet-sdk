@@ -15,7 +15,6 @@ import {
   WEEKLY_BASE_INTEREST,
   WEEKLY_INTEREST_INCREMENT,
 } from "./constants/blockchain";
-import { INVESTMENT_M8 } from "./deposits/investment-m8";
 /**
  * Deposits / banking (CryptoNote type-`03`).
  *
@@ -40,6 +39,7 @@ import { INVESTMENT_M8 } from "./deposits/investment-m8";
  * serializer; this module is the interest + scan + type half.
  */
 import { derivePublicKey, generateKeyDerivation } from "./crypto";
+import { INVESTMENT_M8 } from "./deposits/investment-m8";
 import { parseDaemonNum } from "./tx-shape";
 import type { Hex, WalletKeys } from "./types";
 
