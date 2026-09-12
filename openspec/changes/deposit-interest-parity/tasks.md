@@ -19,8 +19,14 @@
 
 ## 4. Downstream
 
-- [x] 4.1 Update `conceal-next-wallet/tests/interest.test.ts` goldens to daemon-verified values against the new SDK behavior
-- [x] 4.2 Run next-wallet interest tests green (local link or version pin as available)
+- [ ] 4.1 Update `conceal-next-wallet/tests/interest.test.ts` goldens to daemon-verified values against the new SDK behavior
+- [ ] 4.2 Run next-wallet interest tests green (local link or version pin as available)
+
+> **Follow-up (not in this SDK PR):** Daemon float32 expectations are drafted locally in
+> `conceal-next-wallet` (`81_666_664`, `140_800_000`, `6_007_192_064`, …) but are not
+> committed/PRd yet. Mark 4.1/4.2 done only after that next-wallet change lands against
+> a released/pinned SDK that includes this float32 path. Until then the SDK bridge
+> (`vitest.next-wallet-interest.config.ts`) can verify locally.
 
 ## 5. Product-loop acceptance
 
