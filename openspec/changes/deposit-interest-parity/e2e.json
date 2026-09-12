@@ -5,7 +5,7 @@
     {
       "name": "parity-fixtures",
       "cmd": "npm test -- tests/interest-parity.test.ts tests/investment-m8.test.ts",
-      "expect": "Tests.*30 passed|30 passed"
+      "expect": "Tests.*32 passed|32 passed"
     },
     {
       "name": "next-wallet-goldens",
