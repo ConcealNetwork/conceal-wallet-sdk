@@ -1,0 +1,90 @@
+<!-- forge-brief-specs-hash:296cfcd67e529171 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deposit interest parity — operator brief</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; color: #1a1a1a; }
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.15rem; margin-top: 1.75rem; }
+    ul { padding-left: 1.25rem; }
+    code { font-size: 0.9em; }
+    .muted { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Deposit interest parity</h1>
+  <p class="muted">Operator brief — what we will build</p>
+
+  <h2>TL;DR</h2>
+  <p>
+    Withdrawals built by the web wallet can fail on-chain when JavaScript interest
+    is off by one atomic unit from the Conceal daemon. We will make the SDK’s interest
+    math match the daemon operation-for-operation, and pin that with golden tests.
+  </p>
+
+  <h2>What you'll get</h2>
+  <ul>
+    <li>Interest amounts that the node accepts (same as <code>Currency.cpp</code> for V1/V2/V3).</li>
+    <li>A documented parity table explaining each version’s math.</li>
+    <li>CI that fails if JS ever drifts from daemon-verified fixtures.</li>
+    <li>Updated next-wallet golden tests so they stop pinning old float artifacts.</li>
+  </ul>
+
+  <h2>How it works</h2>
+  <p>
+    The daemon uses 32-bit floats (and a special <code>pow</code> step for long investments).
+    The wallet today uses 64-bit floats, which sometimes floors one unit low
+    (famous case: exact 540,000,000 becomes 539,999,999). We mirror the daemon’s
+    float steps in JS, and for the <code>pow</code> step we ship a tiny precomputed table
+    generated from C++ so browsers never depend on their math library.
+  </p>
+  <pre class="mermaid">
+flowchart LR
+  A[Deposit amount + term] --> B{Version?}
+  B -->|V1| C[BigInt divide - unchanged]
+  B -->|V3 / V2 weekly| D[float32 op mirror]
+  B -->|V2 investment| E[lookup m8 table]
+  E --> D
+  D --> F[trunc to atomic interest]
+  C --> F
+  F --> G[Scan stores interest]
+  F --> H[Withdraw recomputes same function]
+  H --> I[Redeem output amount]
+  </pre>
+
+  <h2>What changes for you</h2>
+  <ul>
+    <li>No new CLI or UI — same SDK APIs.</li>
+    <li>Some displayed/stored interest numbers for old V2/V3 deposits may change by a few atomic units to match the chain (correct behavior).</li>
+    <li>If a wallet still has a wrong stored interest, withdraw will refuse until a resync recomputes it (safer than signing a bad tx).</li>
+  </ul>
+
+  <h2>Risks and open questions</h2>
+  <ul>
+    <li>Investment table must be regenerated if consensus ever changes the investment formula.</li>
+    <li>Live daemon RPC fallback for exotic terms is deferred; unsupported table keys throw.</li>
+  </ul>
+
+  <h2>Out of scope</h2>
+  <ul>
+    <li>Changing the C++ daemon.</li>
+    <li>WASM rewrite of Currency.</li>
+    <li>Pull request / publish unless you ask.</li>
+  </ul>
+
+  <h2>Work overview</h2>
+  <ul>
+    <li>Ground truth artefacts (table + fixtures + PARITY.md) — 3 tasks</li>
+    <li>SDK interest implementation — 4 tasks</li>
+    <li>SDK tests — 3 tasks</li>
+    <li>Next-wallet goldens — 2 tasks</li>
+    <li>Product-loop acceptance — 1 task</li>
+  </ul>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true });</script>
+</body>
+</html>

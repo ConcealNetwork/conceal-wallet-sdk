@@ -16,6 +16,7 @@ import {
   findWithdrawnDepRefs,
   isWithdrawShape,
   type OwnedDeposit,
+  recomputeDepositInterest,
 } from "../src/deposits";
 import * as rng from "../src/random";
 import {
@@ -133,12 +134,11 @@ describe("calculateDepositInterest — V3 reference values", () => {
   });
 
   it("V3 tier-2 (>=20000 CCX) uses 0.049 base", () => {
-    // 25000 CCX, 1 month: base 0.049, eir = 0.049/12, floor(2.5e10 * 0.049/12)
-    const expected = Math.floor(2.5e10 * (0.049 / 12));
+    // 25000 CCX, 1 month — daemon/float32 truth (C++ float32 path gives 102_083_328,
+    // not the float64 Math.floor result of 102_083_333).
     expect(calculateDepositInterest({ amount: 2.5e10, term: 21900, lockHeight: 500000 })).toBe(
-      expected,
+      102_083_328,
     );
-    expect(expected).toBe(102_083_333);
   });
 
   it("V3 6-month tier-0 (<10000 CCX) matches the formula", () => {
@@ -1161,5 +1161,38 @@ describe("WalletState v1 → v2 deserialize", () => {
 
   it("DEPOSIT_MIN_TERM_BLOCK is one month (21900 blocks)", () => {
     expect(DEPOSIT_MIN_TERM_BLOCK).toBe(21900);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Single-path invariant: calculateDepositInterest === recomputeDepositInterest
+// Verified on the v3-6mo-20k fixture (540_000_000 — the float32 regression case).
+// ---------------------------------------------------------------------------
+describe("single-path interest invariant", () => {
+  it("recomputeDepositInterest returns same value as calculateDepositInterest for V3 540M case", () => {
+    // v3-6mo-20k: 20 000 CCX × 6 months — expectedInterest = 540_000_000
+    // (Before the float32 rewrite this returned 539_999_999 in float64.)
+    const amount = 20_000_000_000;
+    const term = 131_400; // 6 × 21900
+    const blockHeight = 500_000;
+
+    const direct = calculateDepositInterest({ amount, term, lockHeight: blockHeight });
+    expect(direct).toBe(540_000_000);
+
+    const deposit: OwnedDeposit = {
+      amount,
+      globalIndex: 0,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32) as `${string}`,
+      publicKey: "cd".repeat(32) as `${string}`,
+      keys: ["cd".repeat(32) as `${string}`],
+      term,
+      blockHeight,
+      txHash: "ef".repeat(32) as `${string}`,
+      interest: direct,
+      unlockHeight: blockHeight + term,
+    };
+
+    expect(recomputeDepositInterest(deposit)).toBe(direct);
   });
 });

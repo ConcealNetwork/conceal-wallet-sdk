@@ -1,0 +1,15 @@
+{
+  "change": "deposit-interest-parity",
+  "notApplicable": null,
+  "rows": [
+    {
+      "capability": "deposit-interest-parity — daemon-identical interest",
+      "library": "src/deposits.ts (calculateDepositInterest)",
+      "runtimeOwner": "scanDepositOutput (sync) + recomputeDepositInterest → buildWithdrawTransaction",
+      "writes": "OwnedDeposit.interest (atomic units) consumed by withdraw redeem output amount",
+      "reads": "amount, term, lockHeight/blockHeight; V2 investment m8 table",
+      "uiConsumer": "conceal-next-wallet deposit.service / interest calculator (via SDK export)",
+      "evidence": "tests/fixtures/interest-parity.json + vitest parity; forge e2e run"
+    }
+  ]
+}
