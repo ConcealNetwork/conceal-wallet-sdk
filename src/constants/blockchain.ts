@@ -43,7 +43,7 @@ export const DEPOSIT_MAX_TERM_BLOCK = DEPOSIT_MAX_TERM_MONTH * DEPOSIT_MIN_TERM_
 /** V3 monthly base rates by amount tier: `[ <10000, >=10000 & <20000, >=20000 ]`. */
 export const DEPOSIT_RATE_V3: readonly number[] = [0.029, 0.039, 0.049];
 
-// --- interest dispatch (Interest.ts verbatim) ---
+// --- interest dispatch (Currency.cpp) ---
 
 /** One week, in blocks. */
 export const DEPOSIT_MIN_TERM = 5040;

@@ -1,0 +1,21 @@
+{
+  "change": "deposit-interest-parity",
+  "notApplicable": null,
+  "steps": [
+    {
+      "name": "parity-fixtures",
+      "cmd": "npm test -- tests/interest-parity.test.ts tests/investment-m8.test.ts",
+      "expect": "Tests.*32 passed|32 passed"
+    },
+    {
+      "name": "next-wallet-goldens",
+      "cmd": "npx vitest run --config vitest.next-wallet-interest.config.ts",
+      "expect": "10 passed"
+    },
+    {
+      "name": "types-lint",
+      "cmd": "npm run types && npm run lint",
+      "expect": "."
+    }
+  ]
+}

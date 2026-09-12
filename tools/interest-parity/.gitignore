@@ -1,0 +1,4 @@
+# Compiled binaries — do not commit
+gen_m8
+gen_interest
+check_known
