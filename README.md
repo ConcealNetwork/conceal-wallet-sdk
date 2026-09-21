@@ -65,6 +65,22 @@ encodeIntegratedAddress(spendPublicKey, viewPublicKey, "00112233445566aa");
 isValidAddress("ccx7…"); // boolean
 ```
 
+## Mnemonic lifecycle
+
+Treat `account.mnemonic` as **ephemeral**: it is a one-shot result for the initial backup/reveal, not a field to keep around.
+
+- After the user has saved the phrase, omit it from any long-lived wallet/runtime object — use `omitMnemonic(account)` to get a copy without it:
+
+  ```ts
+  import { omitMnemonic } from "conceal-wallet-sdk";
+
+  const account = createAccount(); // show account.mnemonic once for backup
+  const safe = omitMnemonic(account); // address + keys only
+  ```
+
+- A later settings reveal should re-derive the phrase from the private spend key (or use a password-gated restore), not read a cached copy.
+- JavaScript cannot securely zeroize strings — "clearing" a phrase means dropping references so the garbage collector can reclaim the memory. `omitMnemonic` never mutates its input; it makes that reference drop explicit.
+
 ## Design
 
 - **Typed** — proper types over lib-js's primitive surface; no `any` leaking to consumers.

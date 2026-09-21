@@ -44,6 +44,26 @@ export function restoreFromMnemonic(phrase: string, language?: SeedLanguage): Ac
 }
 
 /**
+ * Return a shallow copy of the account without the `mnemonic` property.
+ *
+ * Treat `account.mnemonic` as **ephemeral**: it is a one-shot result for the
+ * initial backup/reveal. Once the user has saved the phrase, drop every
+ * reference to it — long-lived wallet/runtime objects should hold only the
+ * keys + address, and a later settings reveal should re-derive the phrase
+ * from the private spend key or use a password-gated restore instead of
+ * reading a cached copy.
+ *
+ * JavaScript cannot securely zeroize strings, so "clearing" means dropping
+ * references so the garbage collector can reclaim the memory; this helper
+ * makes that drop explicit at the API boundary. The input object is never
+ * mutated.
+ */
+export function omitMnemonic(account: Account): Account {
+  const { mnemonic: _omitted, ...rest } = account;
+  return rest;
+}
+
+/**
  * Restore from a raw private spend key (hex). The view key is derived
  * deterministically (standard CryptoNote wallet), reproducing the same address.
  */

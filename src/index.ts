@@ -6,7 +6,13 @@
  * Conceal (CCX), built on the conceal-lib-js cryptographic primitives.
  */
 
-export { type Account, createAccount, restoreFromMnemonic, restoreFromSpendKey } from "./account";
+export {
+  type Account,
+  createAccount,
+  omitMnemonic,
+  restoreFromMnemonic,
+  restoreFromSpendKey,
+} from "./account";
 export {
   createMemoryStorage,
   createNamespacedStorage,
