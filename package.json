@@ -42,7 +42,7 @@
     "release": "npm run build && npm pack"
   },
   "dependencies": {
-    "conceal-lib-js": "https://github.com/ConcealNetwork/conceal-lib-js/releases/download/v0.3.4/conceal-lib-js-0.3.4.tgz"
+    "conceal-lib-js": "https://github.com/ConcealNetwork/conceal-lib-js/releases/download/v0.3.5/conceal-lib-js-0.3.5.tgz"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",
