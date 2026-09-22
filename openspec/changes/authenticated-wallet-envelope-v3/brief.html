@@ -1,0 +1,76 @@
+<!-- forge-brief-specs-hash:bc3df961cd867de1 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Operator brief — authenticated wallet envelope v3</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    code, pre { font-family: ui-monospace, monospace; }
+    pre { background: #f4f4f5; padding: 0.75rem 1rem; overflow-x: auto; }
+    h1, h2 { line-height: 1.2; }
+    .note { border-left: 4px solid #2563eb; padding-left: 0.75rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Authenticated wallet envelope v3 (Argon2id)</h1>
+  <p><strong>Change:</strong> <code>authenticated-wallet-envelope-v3</code> · <strong>SDK:</strong> bump to <code>0.3.0</code></p>
+
+  <h2>In plain language</h2>
+  <p>
+    Wallet JSON backups and in-app stored wallets will be encrypted with
+    <strong>Argon2id</strong> (memory-hard password hashing) plus the same
+    <strong>secretbox</strong> cipher as today. Older Conceal files still open.
+    Every <em>new</em> save or download is Envelope&nbsp;3. Apps on SDK 0.2.x
+    <strong>cannot</strong> open those new files — next-wallet and Get NowHere
+    must bump together after this release.
+  </p>
+
+  <div class="note">
+    Downloads create a <em>new</em> file. The user’s original imported JSON is
+    never deleted or overwritten by export. Device storage upgrades 1/2 → 3
+    only after a verified decrypt of the new blob.
+  </div>
+
+  <h2>Envelope versions</h2>
+  <ul>
+    <li><strong>1</strong> — legacy inline (only keys encrypted)</li>
+    <li><strong>2</strong> — legacy whole-blob pad/clamp password</li>
+    <li><strong>3</strong> — Argon2id + authenticated KDF metadata (only format we write)</li>
+  </ul>
+  <p>Inner wallet JSON is still called <code>RawWalletV1</code> — that is not the envelope version.</p>
+
+  <h2>Flow</h2>
+  <pre>import / storage JSON
+        │
+        ▼
+parseEncryptedWalletJson  (reject if &gt; 32 MiB text)
+        │
+        ▼
+openEncryptedWallet
+  envelope===3? → Argon2id path only
+  else data[]?  → legacy env 2
+  else encKeys? → legacy env 1
+  else → null
+        │
+        ▼
+OpenedWallet { raw, keys, envelope }
+        │
+        ├─ env 1|2 + storage open → migrateToEnvelope3 → verify → setItem(v3)
+        └─ env 3 → return (no rewrite on open)
+  </pre>
+
+  <h2>What operators should check after implement</h2>
+  <ul>
+    <li>Legacy fixtures still unlock</li>
+    <li>New saves show <code>"envelope": 3</code> and Argon2id kdf</li>
+    <li>Wrong password / tampered params → null</li>
+    <li>Storage migrate only when round-trip verify succeeds</li>
+    <li><code>npm run types && npm run lint && npm test</code> green</li>
+  </ul>
+
+  <h2>Follow-up (apps, not this PR)</h2>
+  <p>Bump <code>conceal-wallet-sdk</code> in next-wallet and getnowhere. Prefer
+  <code>parseEncryptedWalletJson</code> for file import (today they parse first).</p>
+</body>
+</html>

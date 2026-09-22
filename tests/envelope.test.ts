@@ -1,8 +1,10 @@
 import { address as ccxAddress, secretbox } from "conceal-lib-js";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryStorage } from "../src/adapters";
+import * as cryptoMod from "../src/crypto";
 import {
   type EncryptedWalletEnvelope,
+  type Envelope3,
   hasStoredWallet,
   normalizeWalletPassword,
   openEncryptedWallet,
@@ -12,6 +14,17 @@ import {
   saveStoredWallet,
 } from "../src/envelope";
 import { userKeysFromPriv } from "../src/keys";
+
+/** Deterministic 32-byte secretbox key for mocked argon2id (save + open). */
+const FAKE_KEY_HEX = "11".repeat(32);
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+function mockArgon2id() {
+  return vi.spyOn(cryptoMod, "argon2id").mockReturnValue(FAKE_KEY_HEX);
+}
 
 const CCX_PREFIX = ccxAddress.ADDRESS_PREFIX; // 0x7ad4 / 31444
 
@@ -77,6 +90,7 @@ describe("normalizeWalletPassword (KDF byte-exactness)", () => {
 
 describe("openEncryptedWallet / saveEncryptedWallet round-trip", () => {
   it("round-trips a full RawWalletV1 including v3 fields", () => {
+    mockArgon2id();
     const raw = makeRaw({
       creationHeight: 12345,
       txPrivateKeys: { abcd: "ef".repeat(32) },
@@ -84,12 +98,20 @@ describe("openEncryptedWallet / saveEncryptedWallet round-trip", () => {
       addressBook: [{ id: "1", label: "Alice", address: "ccx7..." }],
       sentMessages: [{ txHash: "tx1", body: "hi" }],
     });
-    const env = saveEncryptedWallet(raw, "hunter2");
-    expect(env.nonce.length).toBe(24);
+    const env: Envelope3 = saveEncryptedWallet(raw, "hunter2");
+    expect(env.envelope).toBe(3);
+    expect(env.kdf.alg).toBe("argon2id");
+    expect(env.kdf.v).toBe(19);
+    expect(env.kdf.m).toBe(32768);
+    expect(env.kdf.t).toBe(3);
+    expect(env.kdf.p).toBe(1);
+    expect(env.kdf.salt).toMatch(/^[0-9a-f]{32}$/);
+    expect(env.nonce).toMatch(/^[0-9a-f]{48}$/);
     expect(Array.isArray(env.data)).toBe(true);
 
     const opened = openEncryptedWallet(env, "hunter2");
     expect(opened).not.toBeNull();
+    expect(opened?.envelope).toBe(3);
     expect(opened?.raw).toEqual(raw);
     // v3 fields preserved verbatim.
     expect(opened?.raw.addressBook).toEqual(raw.addressBook);
@@ -100,11 +122,14 @@ describe("openEncryptedWallet / saveEncryptedWallet round-trip", () => {
   });
 
   it("returns null for a wrong password", () => {
+    mockArgon2id();
     const env = saveEncryptedWallet(makeRaw(), "correct-horse");
+    vi.spyOn(cryptoMod, "argon2id").mockReturnValue("22".repeat(32));
     expect(openEncryptedWallet(env, "battery-staple")).toBeNull();
   });
 
   it("preserves unknown future fields on round-trip (lossless)", () => {
+    mockArgon2id();
     const raw = makeRaw({ futureField: { nested: [1, 2, 3] } } as Partial<RawWalletV1>);
     const env = saveEncryptedWallet(raw, "pw");
     expect(openEncryptedWallet(env, "pw")?.raw).toEqual(raw);
@@ -138,12 +163,13 @@ describe("legacy-compat cross-check (gold standard)", () => {
     const env = legacyEncode(raw, "passw0rd");
     const opened = openEncryptedWallet(env, "passw0rd");
     expect(opened).not.toBeNull();
+    expect(opened?.envelope).toBe(2);
     expect(opened?.raw).toEqual(raw);
   });
 
-  it("the SDK base64 nonce matches Node's standard base64 (16 bytes → 24 chars)", () => {
-    // saveEncryptedWallet must emit a 24-char standard base64 nonce.
-    const env = saveEncryptedWallet(makeRaw(), "x") as { nonce: string };
+  it("legacy encode base64 nonce matches Node's standard base64 (16 bytes → 24 chars)", () => {
+    // Envelope 2 fixtures craft base64(16 random bytes) → 24-char string; save writes hex.
+    const env = legacyEncode(makeRaw(), "x") as { nonce: string };
     expect(env.nonce.length).toBe(24);
     expect(env.nonce).toMatch(/^[A-Za-z0-9+/]{22}==$/); // 16 bytes → 22 data chars + "=="
   });
@@ -170,6 +196,7 @@ describe("old inline format", () => {
 
     const opened = openEncryptedWallet(env, "inline-pw");
     expect(opened).not.toBeNull();
+    expect(opened?.envelope).toBe(1);
     // 128-hex → fromPriv(privSpend, privView)
     expect(opened?.keys).toEqual(userKeysFromPriv(PRIV_SPEND, PRIV_VIEW));
     expect(opened?.raw.encryptedKeys).toBe(keysString);
@@ -193,16 +220,19 @@ describe("old inline format", () => {
 
 describe("wrong-network prefix guard", () => {
   it("rejects a coinAddressPrefix mismatch", () => {
+    mockArgon2id();
     const env = saveEncryptedWallet(makeRaw({ coinAddressPrefix: 0x1234 }), "pw");
     expect(openEncryptedWallet(env, "pw")).toBeNull();
   });
 
   it("accepts the matching CCX prefix (default)", () => {
+    mockArgon2id();
     const env = saveEncryptedWallet(makeRaw({ coinAddressPrefix: CCX_PREFIX }), "pw");
     expect(openEncryptedWallet(env, "pw")).not.toBeNull();
   });
 
   it("honors an explicit expectedAddressPrefix override", () => {
+    mockArgon2id();
     const env = saveEncryptedWallet(makeRaw({ coinAddressPrefix: 0x1234 }), "pw");
     expect(openEncryptedWallet(env, "pw", { expectedAddressPrefix: 0x1234 })).not.toBeNull();
   });
@@ -210,6 +240,7 @@ describe("wrong-network prefix guard", () => {
 
 describe("key resolution", () => {
   it("rebuilds pub from a partial keys object (missing pub) via normalizeUserKeys", () => {
+    mockArgon2id();
     const raw = makeRaw({
       keys: {
         priv: { spend: PRIV_SPEND, view: PRIV_VIEW },
@@ -244,6 +275,7 @@ describe("key resolution", () => {
   });
 
   it("returns null when keys cannot be resolved", () => {
+    mockArgon2id();
     const env = saveEncryptedWallet(makeRaw({ keys: undefined }), "pw");
     expect(openEncryptedWallet(env, "pw")).toBeNull();
   });
@@ -251,6 +283,7 @@ describe("key resolution", () => {
 
 describe("storage glue", () => {
   it("round-trips through saveStoredWallet / openStoredWallet", async () => {
+    mockArgon2id();
     const storage = createMemoryStorage();
     const raw = makeRaw({ creationHeight: 42 });
 
@@ -261,7 +294,9 @@ describe("storage glue", () => {
     const opened = await openStoredWallet(storage, "secret");
     expect(opened?.raw).toEqual(raw);
     expect(opened?.keys).toEqual(raw.keys);
+    expect(opened?.envelope).toBe(3);
 
+    vi.spyOn(cryptoMod, "argon2id").mockReturnValue("22".repeat(32));
     expect(await openStoredWallet(storage, "nope")).toBeNull();
   });
 
@@ -295,6 +330,7 @@ describe("openEncryptedWallet — review hardening (Codex HIGH + 2 MED, GLM LOW)
   };
 
   it("opens a legacy wallet that omits coinAddressPrefix (defaults to expected)", () => {
+    mockArgon2id();
     const { coinAddressPrefix: _omit, ...noPrefix } = RAW;
     const env = saveEncryptedWallet(noPrefix as RawWalletV1, "pw");
     const opened = openEncryptedWallet(env, "pw");

@@ -1,0 +1,15 @@
+{
+  "change": "authenticated-wallet-envelope-v3",
+  "notApplicable": null,
+  "rows": [
+    {
+      "capability": "wallet-envelope — open/save/migrate password envelopes",
+      "library": "src/envelope.ts (+ src/crypto.ts argon2id facade)",
+      "runtimeOwner": "openStoredWallet / saveStoredWallet (StorageAdapter) and openEncryptedWallet / saveEncryptedWallet (file backup codec)",
+      "writes": "WALLET_STORAGE_KEY JSON string (Envelope 3 only on write); download backups are new files",
+      "reads": "stored or imported JSON; password; allowlisted Argon2id params",
+      "uiConsumer": "conceal-next-wallet + getnowhere (after SDK bump; parseEncryptedWalletJson for imports)",
+      "evidence": "tests/envelope.test.ts (+ CONCEAL_ARGON2_LIVE optional); forge e2e run"
+    }
+  ]
+}

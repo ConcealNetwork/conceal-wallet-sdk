@@ -41,6 +41,48 @@ export function cnFastHash(dataHex: Hex): Hex {
   return ccxCrypto.cn_fast_hash(dataHex) as Hex;
 }
 
+/** Encode bytes as lowercase hex. */
+export function hexEncode(bytes: Uint8Array): Hex {
+  return cnutils.bintohex(bytes) as Hex;
+}
+
+/** Decode hex (upper or lower) to bytes. */
+export function hexDecode(hex: string): Uint8Array {
+  return cnutils.hextobin(hex) as Uint8Array;
+}
+
+/** Decode hex then re-encode as lowercase (canonical form for Argon2id salt). */
+export function canonicalizeHex(hex: string): Hex {
+  return hexEncode(hexDecode(hex));
+}
+
+/**
+ * Derive a 32-byte key with Argon2id v0x13 (RFC 9106).
+ *
+ * `passwordHex` and `saltHex` are hex encodings of raw bytes — UTF-8 encoding
+ * of passwords is the caller's job. Returns 64 lowercase hex characters.
+ *
+ * Memory-hard: Envelope 3 open/save SHOULD run this off the UI thread (e.g. a
+ * Worker or equivalent background context). This SDK keeps a sync API; no
+ * Worker is shipped in this change.
+ *
+ * @param passwordHex - Hex of password bytes
+ * @param saltHex - Hex of salt bytes (canonicalize before calling when salt
+ *   may arrive mixed-case from wire)
+ * @param memoryKiB - Memory cost in kibibytes
+ * @param iterations - Time cost (passes)
+ * @param parallelism - Lane count (`p`)
+ */
+export function argon2id(
+  passwordHex: Hex,
+  saltHex: Hex,
+  memoryKiB: number,
+  iterations: number,
+  parallelism: number,
+): Hex {
+  return ccxCrypto.argon2id(passwordHex, saltHex, memoryKiB, iterations, parallelism) as Hex;
+}
+
 export function generateKeyDerivation(pubHex: Hex, secHex: Hex): Hex {
   return ccxCrypto.generate_key_derivation(pubHex, secHex) as Hex;
 }

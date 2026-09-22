@@ -1,0 +1,16 @@
+{
+  "change": "authenticated-wallet-envelope-v3",
+  "notApplicable": null,
+  "steps": [
+    {
+      "name": "envelope-unit",
+      "cmd": "npm test -- tests/envelope.test.ts tests/envelope-v3.test.ts tests/crypto-argon2id.test.ts",
+      "expect": "passed"
+    },
+    {
+      "name": "types-lint",
+      "cmd": "npm run types && npm run lint",
+      "expect": "."
+    }
+  ]
+}
