@@ -526,6 +526,18 @@ describe("migrateToEnvelope3 + openStoredWallet migration", () => {
     expect(argonCalls).toBeGreaterThanOrEqual(2);
   });
 
+  it("migrateToEnvelope3 returns null when password UTF-8 length exceeds 1024", () => {
+    mockArgon2id();
+    const tooLong = "a".repeat(1500);
+    const opened = openEncryptedWallet(craftEnvelope2(makeWallet(), tooLong), tooLong);
+    expect(opened).not.toBeNull();
+    if (opened === null) return;
+    expect(opened.envelope).toBe(2);
+
+    expect(migrateToEnvelope3(opened, tooLong)).toBeNull();
+    expect(cryptoMod.argon2id).not.toHaveBeenCalled();
+  });
+
   it("openStoredWallet migrates Envelope 2 → 3 and rewrites storage", async () => {
     mockArgon2id();
     const storage = createMemoryStorage();
@@ -620,6 +632,22 @@ describe("migrateToEnvelope3 + openStoredWallet migration", () => {
     expect(after).not.toBeNull();
     if (after === null) return;
     expect(JSON.parse(after).envelope).toBe(3);
+  });
+
+  it("openStoredWallet returns legacy opened when password UTF-8 length exceeds 1024", async () => {
+    mockArgon2id();
+    const tooLong = "a".repeat(1500);
+    const storage = createMemoryStorage();
+    const wallet = makeWallet({ lastHeight: 7 });
+    const legacyJson = JSON.stringify(craftEnvelope2(wallet, tooLong));
+    await storage.setItem(WALLET_STORAGE_KEY, legacyJson);
+
+    const opened = await openStoredWallet(storage, tooLong);
+    expect(opened).not.toBeNull();
+    expect(opened?.envelope).toBe(2);
+    expect(opened?.raw).toEqual(wallet);
+    expect(await storage.getItem(WALLET_STORAGE_KEY)).toBe(legacyJson);
+    expect(cryptoMod.argon2id).not.toHaveBeenCalled();
   });
 
   it("openStoredWallet returns null for oversize stored JSON via parseEncryptedWalletJson", async () => {

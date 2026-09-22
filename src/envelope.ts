@@ -524,25 +524,30 @@ export function saveEncryptedWallet(raw: RawWalletV1, password: string): Envelop
 }
 
 /**
- * Re-encrypt an already-opened wallet to Envelope 3 in memory (no storage I/O).
- * Uses `opened.raw`, verifies by opening the new envelope (with the same
- * {@link OpenWalletOptions}), and returns `null` when that verify open fails.
+ * Re-encrypt an opened wallet to Envelope 3 in memory (no storage I/O).
+ * `null` on verify fail or oversize password; other save errors throw.
+ * @see docs/wallet-envelope.md
  */
 export function migrateToEnvelope3(
   opened: OpenedWallet,
   password: string,
   opts?: OpenWalletOptions,
 ): Envelope3 | null {
-  const v3 = saveEncryptedWallet(opened.raw, password);
+  let v3: Envelope3;
+  try {
+    v3 = saveEncryptedWallet(opened.raw, password);
+  } catch (error) {
+    if (error instanceof RangeError) return null;
+    throw error;
+  }
   if (openEncryptedWallet(v3, password, opts) === null) return null;
   return v3;
 }
 
 /**
  * Read + decrypt the stored `"wallet"` record through a {@link StorageAdapter}.
- * Returns `null` when no wallet is stored or decryption fails.
- * Legacy envelopes 1/2 are migrated to Envelope 3 only after in-memory verify;
- * already-v3 opens do not rewrite storage.
+ * Legacy 1/2 migrate to Envelope 3 only after verify; a skip writes nothing.
+ * @see docs/wallet-envelope.md
  */
 export async function openStoredWallet(
   storage: StorageAdapter,
@@ -566,13 +571,8 @@ export async function openStoredWallet(
     return opened;
   }
 
-  return (
-    openEncryptedWallet(v3, password, opts) ?? {
-      raw: opened.raw,
-      keys: opened.keys,
-      envelope: 3,
-    }
-  );
+  // migrateToEnvelope3 already verified open; do not re-derive Argon2id.
+  return { raw: opened.raw, keys: opened.keys, envelope: 3 };
 }
 
 /** Encrypt + write the `"wallet"` record (always Envelope 3) through a {@link StorageAdapter}. */

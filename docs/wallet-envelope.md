@@ -79,6 +79,13 @@ applies for Envelope 3).
   legacy opened wallet. `setItem` throw after verify keeps the legacy blob and
   still returns the in-memory opened wallet. Already-v3 storage is not
   rewritten on open.
+- Envelope 3 rejects passwords whose UTF-8 length exceeds 1024 bytes. Legacy
+  pad/clamp still opens with a longer string (only 32 characters feed the key).
+  `saveEncryptedWallet` throws `RangeError` there, so explicit save/download
+  fails loudly; `migrateToEnvelope3` maps that `RangeError` to `null`, so
+  `openStoredWallet` returns the in-memory legacy wallet and leaves storage
+  unchanged. A later `saveStoredWallet` with the same oversize password still
+  throws until the user sets a password of 1024 UTF-8 bytes or fewer.
 - Downloaded/imported JSON files are never mutated by a download path; only
   device storage migrates.
 

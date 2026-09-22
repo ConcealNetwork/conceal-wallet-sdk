@@ -65,7 +65,7 @@ The system MUST continue to open Envelope 1 (inline `encryptedKeys` number array
 - **THEN** keys and raw wallet fields are recovered
 
 ### Requirement: Writes and storage migration are Envelope 3 only and non-destructive
-`saveEncryptedWallet` and `saveStoredWallet` MUST emit only Envelope 3. Opening a stored wallet MUST parse via a size-gated JSON helper that rejects strings longer than `33_554_432` characters before `JSON.parse`. If open succeeds with envelope 1 or 2, the system MUST build Envelope 3 in memory, verify by opening it with the same password, and only then replace the storage value with the full serialized JSON string. If verify fails, the system MUST return the legacy opened wallet and MUST NOT write. If `setItem` throws after verify, the previous storage value MUST remain and the in-memory opened wallet MUST still be returned. If the stored envelope is already 3, open MUST NOT rewrite it solely because it was opened.
+`saveEncryptedWallet` and `saveStoredWallet` MUST emit only Envelope 3. Opening a stored wallet MUST parse via a size-gated JSON helper that rejects strings longer than `33_554_432` characters before `JSON.parse`. If open succeeds with envelope 1 or 2, the system MUST build Envelope 3 in memory, verify by opening it with the same password, and only then replace the storage value with the full serialized JSON string. If verify fails, or if Envelope 3 cannot be written because the password UTF-8 length exceeds 1024 bytes, the system MUST return the legacy opened wallet and MUST NOT write (`migrateToEnvelope3` returns `null`; `saveEncryptedWallet` still throws `RangeError` for explicit save). If `setItem` throws after verify, the previous storage value MUST remain and the in-memory opened wallet MUST still be returned. If the stored envelope is already 3, open MUST NOT rewrite it solely because it was opened.
 
 #### Scenario: Successful migrate writes v3
 - **WHEN** storage holds Envelope 2 and the password is correct
@@ -74,6 +74,10 @@ The system MUST continue to open Envelope 1 (inline `encryptedKeys` number array
 #### Scenario: Failed verify does not overwrite
 - **WHEN** migration verify fails after a successful legacy open
 - **THEN** storage is unchanged and the legacy opened wallet is returned
+
+#### Scenario: Oversize password skips migrate without throwing on open
+- **WHEN** storage holds Envelope 1 or 2, the password opens it, and the password UTF-8 length exceeds 1024 bytes
+- **THEN** `openStoredWallet` returns the legacy opened wallet, storage is unchanged, and no exception is thrown
 
 #### Scenario: Already v3 is not rewritten on open
 - **WHEN** storage already holds Envelope 3 and open succeeds
