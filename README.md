@@ -81,6 +81,13 @@ Treat `account.mnemonic` as **ephemeral**: it is a one-shot result for the initi
 - A later settings reveal should re-derive the phrase from the private spend key (or use a password-gated restore), not read a cached copy.
 - JavaScript cannot securely zeroize strings — "clearing" a phrase means dropping references so the garbage collector can reclaim the memory. `omitMnemonic` never mutates its input; it makes that reference drop explicit.
 
+## Wallet backups (envelope)
+
+Official Conceal JSON backups written by this SDK (after the Envelope 3 release)
+use **Envelope 3** (Argon2id + authenticated KDF metadata). Older envelope 1/2
+files remain importable. Apps that have not taken that release **cannot open**
+v3 — bump consumers together. Details: [docs/wallet-envelope.md](docs/wallet-envelope.md).
+
 ## Design
 
 - **Typed** — proper types over lib-js's primitive surface; no `any` leaking to consumers.
