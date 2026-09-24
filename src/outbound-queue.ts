@@ -339,13 +339,37 @@ export function createOutboundQueue(opts: OutboundQueueOptions): OutboundQueue {
 }
 
 /**
- * True when the daemon REJECTED the tx (its message matches the sentinel thrown
- * by `DaemonClient.sendRawTransaction` on a non-OK status). A network/HTTP
- * failure throws a structurally different error and is treated as transient.
+ * True when the daemon REJECTED the tx: its error matches the sentinel thrown
+ * by `DaemonClient.sendRawTransaction` on a non-OK status AND the embedded
+ * status describes a verdict on the transaction itself. A sentinel error whose
+ * status is a transient relay condition ({@link TRANSIENT_SEND_STATUS}) is NOT
+ * a rejection — the queue retries it like any other transient error. A
+ * network/HTTP failure throws a structurally different error and is also
+ * treated as transient.
  */
 function isRejection(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith("Failed to send raw transaction");
+  if (!(error instanceof Error)) return false;
+  if (!error.message.startsWith(FAILED_SEND_PREFIX)) return false;
+  return !TRANSIENT_SEND_STATUS.test(error.message.slice(FAILED_SEND_PREFIX.length));
 }
+
+/**
+ * Sentinel prefix of the error thrown by `DaemonClient.sendRawTransaction` on
+ * a non-OK daemon status. The status (and optional reason) follow the prefix:
+ * `"Failed to send raw transaction: <status>[ (<reason>)]"`.
+ */
+const FAILED_SEND_PREFIX = "Failed to send raw transaction:";
+
+/**
+ * Statuses that mean "the daemon could not process the relay right now" rather
+ * than "the chain refused this tx". `BUSY` is what a core that is syncing or
+ * otherwise not ready returns for an otherwise-valid relay; the remaining
+ * patterns cover the 5xx-style statuses a load-balanced front returns while
+ * the backing daemon is busy or unreachable. These must retry, not fail the
+ * queued spend permanently.
+ */
+const TRANSIENT_SEND_STATUS =
+  /^\s*(?:BUSY\b|5\d{2}\b|TIMEOUT\b|GATEWAY\b|UNAVAILABLE\b|OVERLOADED\b|TOO MANY REQUESTS\b)/i;
 
 /** Narrow an unknown JSON value to a valid {@link OutboundQueueFailReason}. */
 function asFailReason(value: unknown): OutboundQueueFailReason | undefined {

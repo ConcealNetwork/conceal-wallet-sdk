@@ -398,6 +398,105 @@ describe("drainOnce — transient errors and maxAttempts", () => {
   });
 });
 
+describe("drainOnce — transient daemon statuses (BUSY / 5xx-style)", () => {
+  let now: number;
+  let storage: StorageAdapter;
+  let daemon: FakeDaemon;
+  let q: OutboundQueue;
+
+  beforeEach(() => {
+    now = 1000;
+    storage = createMemoryStorage();
+    daemon = fakeDaemon();
+    q = queue(storage, daemon, { clock: () => now });
+  });
+
+  it("keeps a queued spend pending on a BUSY daemon and retries on the next drain", async () => {
+    const busy = new Error("Failed to send raw transaction: BUSY");
+    daemon.sendRawTransaction.mockRejectedValueOnce(busy).mockResolvedValueOnce({ status: "OK" });
+    const id = await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
+
+    const r1 = await q.drainOnce();
+    expect(r1).toEqual([{ id, hash: "tx1", state: "pending", error: busy.message }]);
+    let entry = (await q.list())[0] as OutboundQueueEntry;
+    expect(entry.state).toBe("pending");
+    expect(entry.attempts).toBe(1);
+    expect(entry.failedReason).toBeUndefined();
+    expect(entry.lastError).toBe(busy.message);
+
+    // Inputs stay reserved while the spend is still queued for retry.
+    expect(await q.reservedKeyImages()).toEqual(new Set([K1]));
+
+    // The next drain retries the exact same serialized tx and succeeds.
+    const r2 = await q.drainOnce();
+    expect(r2).toEqual([{ id, hash: "tx1", state: "broadcast" }]);
+    entry = (await q.list())[0] as OutboundQueueEntry;
+    expect(entry.state).toBe("broadcast");
+    expect(daemon.sendRawTransaction).toHaveBeenCalledTimes(2);
+    expect(daemon.sendRawTransaction.mock.calls[0]?.[0]).toBe(
+      daemon.sendRawTransaction.mock.calls[1]?.[0],
+    );
+  });
+
+  it("treats 5xx-style and timeout statuses from the daemon as transient too", async () => {
+    const statuses = [
+      "503 Service Unavailable",
+      "502 Bad Gateway",
+      "504 Gateway TIMEOUT",
+      "TIMEOUT",
+      "OVERLOADED",
+    ];
+    for (let i = 0; i < statuses.length; i++) {
+      const status = statuses[i] as string;
+      const id = `tx-${i}`;
+      daemon.sendRawTransaction.mockRejectedValue(
+        new Error(`Failed to send raw transaction: ${status}`),
+      );
+      await q.enqueue(builtTx({ hash: id, keyImages: [i.toString(16).padStart(64, "0")] }));
+      const results = await q.drainOnce();
+      expect(results[0]?.state).toBe("pending");
+      const entry = (await q.list()).find((e) => e.id === id) as OutboundQueueEntry;
+      expect(entry.state).toBe("pending");
+      expect(entry.failedReason).toBeUndefined();
+    }
+  });
+
+  it("still applies the maxAttempts cap to BUSY retries", async () => {
+    const capped = queue(storage, daemon, { clock: () => now, maxAttempts: 2 });
+    daemon.sendRawTransaction.mockRejectedValue(new Error("Failed to send raw transaction: BUSY"));
+    const id = await capped.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
+
+    const r1 = await capped.drainOnce();
+    expect(r1[0]?.state).toBe("pending");
+    const r2 = await capped.drainOnce();
+    expect(r2).toEqual([
+      { id, hash: "tx1", state: "failed", error: "Failed to send raw transaction: BUSY" },
+    ]);
+    const entry = (await capped.list())[0] as OutboundQueueEntry;
+    expect(entry.state).toBe("failed");
+    expect(entry.failedReason).toBe("rejected");
+    expect(entry.attempts).toBe(2);
+  });
+
+  it("still fails a BUSY-shaped entry permanently once the daemon accepts then rejects", async () => {
+    // Sanity guard that the transient window does not mask a later real verdict.
+    daemon.sendRawTransaction
+      .mockRejectedValueOnce(new Error("Failed to send raw transaction: BUSY"))
+      .mockRejectedValueOnce(
+        new Error("Failed to send raw transaction: FAILED (Key image already spent)"),
+      );
+    await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
+
+    const r1 = await q.drainOnce();
+    expect(r1[0]?.state).toBe("pending");
+
+    const r2 = await q.drainOnce();
+    expect(r2[0]?.state).toBe("failed");
+    const entry = (await q.list())[0] as OutboundQueueEntry;
+    expect(entry.failedReason).toBe("conflict");
+  });
+});
+
 describe("drainOnce — notBefore gating", () => {
   let now: number;
   let storage: StorageAdapter;
