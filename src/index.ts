@@ -65,6 +65,7 @@ export {
   hasStoredWallet,
   MAX_ENVELOPE_CIPHERTEXT_BYTES,
   MAX_ENVELOPE_JSON_CHARS,
+  MAX_ENVELOPE_TEXT_CHARS,
   migrateToEnvelope3,
   normalizeWalletPassword,
   type OpenedWallet,
@@ -83,6 +84,7 @@ export {
   type RawWalletV1,
   saveEncryptedWallet,
   saveStoredWallet,
+  stringifyEncryptedWallet,
   WALLET_STORAGE_KEY,
 } from "./envelope";
 /** Wallet fusion / optimization (denomination-bucketed self-consolidation). */
