@@ -256,7 +256,10 @@ function calculateInterestV2(amount: number, term: number): number {
 export interface OwnedDeposit {
   /** Principal, atomic units. */
   amount: number;
-  /** The deposit's GLOBAL output index (the `outputIndex` a withdraw input spends). */
+  /**
+   * Per-amount chain index (`output_indexes[i]`). `0` is the first deposit of this amount.
+   * @see docs/deposit-global-index.md
+   */
   globalIndex: number;
   /** Index of the deposit output within its source tx's `vout` (the sig-derivation index). */
   outputIndex: number;
@@ -369,9 +372,8 @@ export function depRef(deposit: Pick<OwnedDeposit, "txHash" | "globalIndex">): s
 }
 
 /**
- * Withdrawal detection: return deposit refs (`txHash:globalIndex`) this tx withdraws.
- * Mirrors wallet-core `Wallet.addWithdrawal`: match global `outputIndex` + principal
- * `amount`; skip entries already in `spentDepositRefs`.
+ * One type-03 vin → the owned deposit with the same amount and per-amount index.
+ * @see docs/deposit-global-index.md
  */
 export function findWithdrawnDepRefs(
   inputs: readonly RawDepositInput[],
@@ -387,15 +389,14 @@ export function findWithdrawnDepRefs(
     if (input?.type !== "input_to_deposit_key") continue;
     if (typeof input.outputIndex !== "number" || typeof input.amount !== "number") continue;
 
-    for (const deposit of ownedDeposits) {
+    const found = ownedDeposits.find((deposit) => {
       const ref = depRef(deposit);
-      if (spent.has(ref)) continue;
-      if (withdrawn.includes(ref)) continue;
-      if (deposit.globalIndex !== input.outputIndex) continue;
-      if (deposit.amount !== input.amount) continue;
-      withdrawn.push(ref);
-      break;
-    }
+      if (spent.has(ref) || withdrawn.includes(ref)) return false;
+      if (deposit.globalIndex !== input.outputIndex) return false;
+      if (deposit.amount !== input.amount) return false;
+      return true;
+    });
+    if (found) withdrawn.push(depRef(found));
   }
   return withdrawn;
 }

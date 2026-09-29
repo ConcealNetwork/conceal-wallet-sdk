@@ -914,6 +914,110 @@ describe("deposit scan + wallet state", () => {
       ["aa".repeat(32), "bb".repeat(32)].sort(),
     );
   });
+
+  it("outputIndex 0 spends only the first deposit of that amount", () => {
+    const a: OwnedDeposit = {
+      amount: 48_252_000_000,
+      globalIndex: 0,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 262_800,
+      blockHeight: 2_076_391,
+      txHash: "aa".repeat(32),
+      interest: 1,
+      unlockHeight: 2_076_391 + 262_800,
+    };
+    const b: OwnedDeposit = {
+      ...a,
+      amount: 10_000_000_000,
+      publicKey: "ce".repeat(32),
+      keys: ["ce".repeat(32)],
+      txHash: "bb".repeat(32),
+    };
+    let state = createWalletState({ address: wallet.address, keys: wallet.keys });
+    state = applyScannedDeposits(state, [a, b]);
+    const withdrawn = findWithdrawnDepRefs(
+      [{ type: "input_to_deposit_key", outputIndex: 0, term: 262_800, amount: a.amount }],
+      state.deposits,
+    );
+    expect(withdrawn).toEqual([depRef(a)]);
+    state = applyScannedDeposits(state, [], withdrawn);
+    expect(state.spentDepositRefs).toContain(depRef(a));
+    expect(state.spentDepositRefs).not.toContain(depRef(b));
+    expect(state.spentDepositRefs).not.toContain(":0");
+    expect(getLockedDeposits(state, a.blockHeight + 1)).toEqual([
+      expect.objectContaining({ txHash: b.txHash }),
+    ]);
+  });
+
+  it("does not spend every gi=0 row when one amount matches", () => {
+    const a: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 0,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "c1".repeat(32),
+      keys: ["c1".repeat(32)],
+      term: 21_900,
+      blockHeight: 413_401,
+      txHash: "aa".repeat(32),
+      interest: 1,
+      unlockHeight: 413_401 + 21_900,
+    };
+    const b: OwnedDeposit = {
+      ...a,
+      amount: 2e10,
+      publicKey: "c2".repeat(32),
+      keys: ["c2".repeat(32)],
+      txHash: "bb".repeat(32),
+    };
+    let state = createWalletState({ address: wallet.address, keys: wallet.keys });
+    state = applyScannedDeposits(state, [a, b]);
+    state = applyScannedDeposits(state, [], [depRef(a)]);
+    expect(state.spentDepositRefs).toEqual([depRef(a)]);
+    expect(getLockedDeposits(state, 413_401)).toHaveLength(1);
+    expect(getLockedDeposits(state, 413_401)[0]?.txHash).toBe(b.txHash);
+  });
+
+  it("outputIndex 0 does not spend a later deposit of the same amount", () => {
+    const first: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 0,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "c1".repeat(32),
+      keys: ["c1".repeat(32)],
+      term: 21_900,
+      blockHeight: 413_401,
+      txHash: "aa".repeat(32),
+      interest: 1,
+      unlockHeight: 413_401 + 21_900,
+    };
+    const later: OwnedDeposit = {
+      ...first,
+      globalIndex: 5,
+      publicKey: "c2".repeat(32),
+      keys: ["c2".repeat(32)],
+      txHash: "bb".repeat(32),
+    };
+    const vin0 = [
+      { type: "input_to_deposit_key" as const, outputIndex: 0, term: 21_900, amount: first.amount },
+    ];
+    let state = createWalletState({ address: wallet.address, keys: wallet.keys });
+    state = applyScannedDeposits(state, [later]);
+    expect(findWithdrawnDepRefs(vin0, state.deposits)).toEqual([]);
+
+    state = applyScannedDeposits(state, [first]);
+    expect(findWithdrawnDepRefs(vin0, state.deposits)).toEqual([depRef(first)]);
+    expect(
+      findWithdrawnDepRefs(
+        [{ type: "input_to_deposit_key", outputIndex: 5, term: 21_900, amount: first.amount }],
+        state.deposits,
+      ),
+    ).toEqual([depRef(later)]);
+  });
 });
 
 // ===========================================================================
