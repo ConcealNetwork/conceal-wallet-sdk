@@ -35,8 +35,14 @@ export const WALLET_STORAGE_KEY = "wallet";
 /** Max secretbox ciphertext byte length accepted on Envelope 3 open. */
 export const MAX_ENVELOPE_CIPHERTEXT_BYTES = 8_388_608;
 
-/** Max JSON text length accepted by {@link parseEncryptedWalletJson} before parse. */
+/**
+ * Max non-whitespace JSON chars accepted by {@link parseEncryptedWalletJson} before parse
+ * (a max ciphertext in compact form: 4 chars per byte).
+ */
 export const MAX_ENVELOPE_JSON_CHARS = 33_554_432;
+
+/** Hard cap on raw envelope text, whitespace included (pretty-printed backups). */
+export const MAX_ENVELOPE_TEXT_CHARS = 4 * MAX_ENVELOPE_JSON_CHARS;
 
 /** Max password UTF-8 byte length accepted before Envelope 3 Argon2id. */
 const MAX_ENVELOPE3_PASSWORD_BYTES = 1024;
@@ -167,21 +173,45 @@ export interface ParsedClosedArgon2idKdf extends Envelope3Kdf {
   saltCanonicalHex: Hex;
 }
 
+/** Whether `text` has more than `max` non-whitespace (JSON insignificant) chars. */
+function exceedsJsonChars(text: string, max: number): boolean {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c !== 0x20 && c !== 0x0a && c !== 0x0d && c !== 0x09 && ++count > max) return true;
+  }
+  return false;
+}
+
 /**
  * Size-gated JSON parse for wallet envelope text (file import / storage).
- * Rejects non-strings, oversize strings, invalid JSON, and non-plain objects.
- * Does not decrypt.
+ * Strips a BOM + surrounding whitespace; gates raw length and non-whitespace
+ * length before parse. Rejects invalid JSON and non-plain objects. Does not decrypt.
+ * @see docs/wallet-envelope.md
  */
 export function parseEncryptedWalletJson(text: string): Record<string, unknown> | null {
-  if (typeof text !== "string" || text.length > MAX_ENVELOPE_JSON_CHARS) return null;
+  if (typeof text !== "string" || text.length > MAX_ENVELOPE_TEXT_CHARS) return null;
+  const body = text.replace(/^\uFEFF/, "").trim();
+  if (exceedsJsonChars(body, MAX_ENVELOPE_JSON_CHARS)) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(body);
   } catch {
     return null;
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * Serialize an Envelope 3 for a backup file: readable indented header, ciphertext
+ * `data` on one line (near-compact size).
+ * @see docs/wallet-envelope.md
+ */
+export function stringifyEncryptedWallet(envelope: Envelope3): string {
+  const { data, ...header } = envelope;
+  const head = JSON.stringify(header, null, 2).slice(0, -2);
+  return `${head},\n  "data": ${JSON.stringify(data)}\n}\n`;
 }
 
 /**

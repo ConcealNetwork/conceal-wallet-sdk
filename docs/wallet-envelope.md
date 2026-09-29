@@ -62,13 +62,44 @@ Wire shape:
 
 | Constant | Value | Applies to |
 | --- | ---: | --- |
-| `MAX_ENVELOPE_JSON_CHARS` | `33_554_432` | JSON text length before `JSON.parse` |
+| `MAX_ENVELOPE_TEXT_CHARS` | `134_217_728` | Raw text length, whitespace included |
+| `MAX_ENVELOPE_JSON_CHARS` | `33_554_432` | Non-whitespace JSON chars before `JSON.parse` |
 | `MAX_ENVELOPE_CIPHERTEXT_BYTES` | `8_388_608` | Envelope 3 `data.length` on open |
 
-Use `parseEncryptedWalletJson(text)` for file import and storage reads so the
-string gate runs **before** parse. Passing an already-parsed object into
-`openEncryptedWallet` skips the JSON-size gate (ciphertext gate still
+`MAX_ENVELOPE_JSON_CHARS` is a max ciphertext in compact form (`255,` = 4 chars
+per byte). JSON whitespace does not count against it, so pretty-printed backups
+(one ciphertext byte per line) still open; `MAX_ENVELOPE_TEXT_CHARS` bounds the
+raw text.
+
+Use `parseEncryptedWalletJson(text)` for file import and storage reads so both
+gates run **before** parse. It strips a UTF-8 BOM and surrounding whitespace, so
+callers pass file text as read. Passing an already-parsed object into
+`openEncryptedWallet` skips the JSON-size gates (ciphertext gate still
 applies for Envelope 3).
+
+## Backup files
+
+Write backup files with `stringifyEncryptedWallet(envelope)`: an indented,
+human-readable header (`envelope`, `kdf`, `nonce`) and the ciphertext `data`
+array on a single last line. Size stays within a few hundred bytes of compact
+JSON. Do not pretty-print `data` (`JSON.stringify(env, null, 2)`); it costs
+~2.4× the size. Storage blobs stay plain `JSON.stringify`.
+
+```json
+{
+  "envelope": 3,
+  "kdf": {
+    "alg": "argon2id",
+    "v": 19,
+    "m": 32768,
+    "t": 3,
+    "p": 1,
+    "salt": "<32 hex>"
+  },
+  "nonce": "<48 hex>",
+  "data": [12,250,7]
+}
+```
 
 ## Migration and storage
 
@@ -95,6 +126,7 @@ applies for Envelope 3).
   (`{ raw, keys, envelope }` with `envelope` `1` \| `2` \| `3`)
 - `parseEncryptedWalletJson(text)` → object or `null`
 - `saveEncryptedWallet` / `saveStoredWallet` → Envelope 3
+- `stringifyEncryptedWallet(envelope)` → backup-file text (readable header, one-line `data`)
 - `migrateToEnvelope3` — encrypt → verify → return `Envelope3 | null` (callers `JSON.stringify` for storage)
 - `normalizeWalletPassword` — **legacy envelopes 1–2 only**
 

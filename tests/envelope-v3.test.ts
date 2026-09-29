@@ -12,6 +12,7 @@ import {
   type Envelope3Kdf,
   MAX_ENVELOPE_CIPHERTEXT_BYTES,
   MAX_ENVELOPE_JSON_CHARS,
+  MAX_ENVELOPE_TEXT_CHARS,
   migrateToEnvelope3,
   normalizeWalletPassword,
   openEncryptedWallet,
@@ -22,6 +23,7 @@ import {
   type RawWalletV1,
   saveEncryptedWallet,
   saveStoredWallet,
+  stringifyEncryptedWallet,
   WALLET_STORAGE_KEY,
 } from "../src/envelope";
 import { userKeysFromPriv } from "../src/keys";
@@ -101,13 +103,54 @@ describe("envelope size constants", () => {
   it("exports the Envelope 3 size gates", () => {
     expect(MAX_ENVELOPE_CIPHERTEXT_BYTES).toBe(8_388_608);
     expect(MAX_ENVELOPE_JSON_CHARS).toBe(33_554_432);
+    expect(MAX_ENVELOPE_TEXT_CHARS).toBe(4 * MAX_ENVELOPE_JSON_CHARS);
+  });
+
+  it("sizes the JSON gate for a max ciphertext in compact form", () => {
+    // Worst case compact byte is "255," — 4 chars per ciphertext byte.
+    expect(MAX_ENVELOPE_JSON_CHARS).toBe(4 * MAX_ENVELOPE_CIPHERTEXT_BYTES);
   });
 });
 
 describe("parseEncryptedWalletJson", () => {
   it("rejects oversize strings before JSON.parse", () => {
+    const parseSpy = vi.spyOn(JSON, "parse");
     const text = "x".repeat(MAX_ENVELOPE_JSON_CHARS + 1);
     expect(parseEncryptedWalletJson(text)).toBeNull();
+    expect(parseSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not count JSON whitespace against MAX_ENVELOPE_JSON_CHARS", () => {
+    const text = `{${" \n\t\r".repeat(MAX_ENVELOPE_JSON_CHARS / 4)}"a":1}`;
+    expect(text.length).toBeGreaterThan(MAX_ENVELOPE_JSON_CHARS);
+    expect(parseEncryptedWalletJson(text)).toEqual({ a: 1 });
+  });
+
+  it("rejects text over MAX_ENVELOPE_TEXT_CHARS before JSON.parse, even if whitespace", () => {
+    const parseSpy = vi.spyOn(JSON, "parse");
+    const text = `{${" ".repeat(MAX_ENVELOPE_TEXT_CHARS)}}`;
+    expect(parseEncryptedWalletJson(text)).toBeNull();
+    expect(parseSpy).not.toHaveBeenCalled();
+  });
+
+  it("strips a UTF-8 BOM and surrounding whitespace", () => {
+    expect(parseEncryptedWalletJson('\uFEFF \n{"envelope":3}\n ')).toEqual({ envelope: 3 });
+  });
+
+  it("opens a pretty-printed Envelope 3 whose text exceeds the compact gate", () => {
+    vi.spyOn(cryptoMod, "argon2id").mockReturnValue(FAKE_KEY_HEX);
+    // ~4 MB ciphertext: compact fits the gate, JSON.stringify(…, null, 2) does not.
+    const wallet = makeWallet({ lastHeight: 12, pad: "x".repeat(4_000_000) });
+    const env = craftEnvelope3(wallet);
+    const pretty = JSON.stringify(env, null, 2);
+    expect(JSON.stringify(env).length).toBeLessThan(MAX_ENVELOPE_JSON_CHARS);
+    expect(pretty.length).toBeGreaterThan(MAX_ENVELOPE_JSON_CHARS);
+
+    const parsed = parseEncryptedWalletJson(pretty);
+    expect(parsed).not.toBeNull();
+    const opened = openEncryptedWallet(parsed as unknown as Envelope3, "pw");
+    expect(opened?.envelope).toBe(3);
+    expect(opened?.raw.lastHeight).toBe(12);
   });
 
   it("rejects non-string input", () => {
@@ -141,6 +184,41 @@ describe("parseEncryptedWalletJson", () => {
     const text = `${prefix}${"a".repeat(padLen)}${suffix}`;
     expect(text.length).toBe(MAX_ENVELOPE_JSON_CHARS);
     expect(parseEncryptedWalletJson(text)).toEqual({ pad: "a".repeat(padLen) });
+  });
+});
+
+describe("stringifyEncryptedWallet", () => {
+  const env: Envelope3 = {
+    envelope: 3,
+    kdf: validKdf() as Envelope3Kdf,
+    nonce: NONCE24,
+    data: [0, 12, 255, 7],
+  };
+
+  it("round-trips through parseEncryptedWalletJson", () => {
+    expect(parseEncryptedWalletJson(stringifyEncryptedWallet(env))).toEqual(env);
+  });
+
+  it("keeps the header human-readable, one field per line", () => {
+    const lines = stringifyEncryptedWallet(env).split("\n");
+    expect(lines[0]).toBe("{");
+    expect(lines[1]).toBe('  "envelope": 3,');
+    expect(lines).toContain(`  "nonce": "${NONCE24}",`);
+    expect(lines).toContain(`    "salt": "${SALT16}"`);
+  });
+
+  it("writes ciphertext data on a single line, last", () => {
+    const lines = stringifyEncryptedWallet(env).trimEnd().split("\n");
+    expect(lines.at(-2)).toBe('  "data": [0,12,255,7]');
+    expect(lines.at(-1)).toBe("}");
+  });
+
+  it("stays within a small constant of compact size for a real wallet", () => {
+    vi.spyOn(cryptoMod, "argon2id").mockReturnValue(FAKE_KEY_HEX);
+    const saved = saveEncryptedWallet(makeWallet({ pad: "x".repeat(100_000) }), "pw");
+    const text = stringifyEncryptedWallet(saved);
+    expect(text.length - JSON.stringify(saved).length).toBeLessThan(200);
+    expect(openEncryptedWallet(parseEncryptedWalletJson(text) as never, "pw")?.envelope).toBe(3);
   });
 });
 
