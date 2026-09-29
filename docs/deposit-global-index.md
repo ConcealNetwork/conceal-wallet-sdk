@@ -1,11 +1,17 @@
 # Type-03 deposit `globalIndex`
 
-Conceal `get_raw_transactions_by_heights` sets `output_indexes[i] = 0` for
-`txout_to_deposit_key` outputs. Those outputs are not in the type-02 global
-index list. A type-03 withdraw vin uses the same `outputIndex: 0`.
+conceal-core `Blockchain::pushTransaction` appends a deposit
+(`MultisignatureOutput`) to `m_multisignatureOutputs[amount]` and stores that
+list's prior size in `m_global_output_indexes[i]`.
+`get_raw_transactions_by_heights` returns those values as `output_indexes`.
+A withdraw vin's `outputIndex` is the same index:
+`getMultisigOutputReference` resolves `(amount, outputIndex)`.
 
-`0` is a sentinel, not a unique chain index. Identity is create `txHash` +
-one-time key. Withdraw matching: one row (amount, and `gi` only when `gi > 0`).
-Do not mark every stored `txhash:0` spent from a single vin.
+`0` is the first deposit of that exact atomic amount. The same index number
+can exist for a different amount.
 
-Web-wallet: `Wallet.addWithdrawal` (amount + index, first match only).
+Withdraw match is one row: `amount` and `globalIndex === outputIndex`.
+Do not mark every deposit that shares an index number. The empty-hash spent
+marker `:0` is omitted: every amount's first deposit is index `0`.
+
+Web-wallet: `Wallet.addWithdrawal` (amount + `globalOutputIndex`).

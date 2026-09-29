@@ -257,7 +257,7 @@ export interface OwnedDeposit {
   /** Principal, atomic units. */
   amount: number;
   /**
-   * Daemon `output_indexes[i]` for this output. Type-03 is `0` (not unique).
+   * Per-amount chain index (`output_indexes[i]`). `0` is the first deposit of this amount.
    * @see docs/deposit-global-index.md
    */
   globalIndex: number;
@@ -371,12 +371,8 @@ export function depRef(deposit: Pick<OwnedDeposit, "txHash" | "globalIndex">): s
   return `${deposit.txHash}:${deposit.globalIndex}`;
 }
 
-function isUsableDepositGi(gi: number | undefined): boolean {
-  return typeof gi === "number" && gi > 0;
-}
-
 /**
- * One type-03 vin → at most one owned deposit (`Wallet.addWithdrawal`).
+ * One type-03 vin → the owned deposit with the same amount and per-amount index.
  * @see docs/deposit-global-index.md
  */
 export function findWithdrawnDepRefs(
@@ -393,12 +389,11 @@ export function findWithdrawnDepRefs(
     if (input?.type !== "input_to_deposit_key") continue;
     if (typeof input.outputIndex !== "number" || typeof input.amount !== "number") continue;
 
-    const matchGi = isUsableDepositGi(input.outputIndex);
     const found = ownedDeposits.find((deposit) => {
       const ref = depRef(deposit);
       if (spent.has(ref) || withdrawn.includes(ref)) return false;
+      if (deposit.globalIndex !== input.outputIndex) return false;
       if (deposit.amount !== input.amount) return false;
-      if (matchGi) return deposit.globalIndex === input.outputIndex;
       return true;
     });
     if (found) withdrawn.push(depRef(found));

@@ -426,7 +426,7 @@ function migrateSpentRefsForEnrichedHash(
   return changed ? next : [...spentRefs];
 }
 
-/** Same output only (`txhash:gi` and empty-hash twin). @see docs/deposit-global-index.md */
+/** Same output only. Omits empty-hash `:0`. @see docs/deposit-global-index.md */
 function withdrawalRefAliases(ref: string, deposits: readonly OwnedDeposit[]): string[] {
   const matched = deposits.find((d) => depRef(d) === ref);
   if (!matched) return [];
