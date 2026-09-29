@@ -25,6 +25,15 @@ Quality gate before completing changes: `npm run types && npm run lint && npm te
 
 **Node / WASM:** CI and `engines` require Node **≥ 24**. On Node 22, run tests with `NODE_OPTIONS=--experimental-wasm-modules npm test` so lib-js WASM loads.
 
+## Daemon facts (conceal-core — do not invent statuses)
+
+Verify any claimed daemon response against `conceal-core/src/Rpc` (`RpcServer.cpp`, `CoreRpcServerCommandsDefinitions.h`) before coding around it.
+
+- `/sendrawtransaction` returns only `status`: `OK` | `Failed` | `Too big` | `Not relayed` — there is no `reason` field (`RpcServer::on_send_raw_tx`).
+- A busy/unsynced core answers HTTP 500 `Core is busy` before the handler runs; `BUSY` is defined but never emitted.
+- Double-spends (mempool or chain) surface only as `Failed`; the "already spent" detail exists only in the daemon log.
+- `Not relayed` most often means the same tx hash is already in the pool or chain (`core::add_new_tx`), i.e. not a rejection.
+
 ## Conventions & gotchas
 
 - **Biome only** (no ESLint/Prettier). CI gates on `npm run lint` / `npm run types` (exit non-zero on errors), so run both before pushing.
