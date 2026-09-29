@@ -406,14 +406,6 @@ function mergeDeposit(existing: OwnedDeposit, incoming: OwnedDeposit): OwnedDepo
   return { ...existing, ...incoming, txHash: incoming.txHash || existing.txHash };
 }
 
-/** `depRef` global-index suffix (`hash:42` or `:42`). */
-function globalIndexFromDepRef(ref: string): number | null {
-  const colon = ref.lastIndexOf(":");
-  if (colon < 0) return null;
-  const gi = Number.parseInt(ref.slice(colon + 1), 10);
-  return Number.isFinite(gi) && gi >= 0 ? gi : null;
-}
-
 /** When hash enrichment arrives, upgrade legacy `:globalIndex` spent markers. */
 function migrateSpentRefsForEnrichedHash(
   spentRefs: readonly string[],
@@ -434,17 +426,20 @@ function migrateSpentRefsForEnrichedHash(
   return changed ? next : [...spentRefs];
 }
 
-/** All `spentDepositRefs` aliases for one withdrawal (hash vs empty-hash twins). */
+/** Same output only (`txhash:gi` and empty-hash twin). @see docs/deposit-global-index.md */
 function withdrawalRefAliases(ref: string, deposits: readonly OwnedDeposit[]): string[] {
-  const gi = globalIndexFromDepRef(ref);
-  if (gi === null) {
-    return deposits.some((d) => depRef(d) === ref) ? [ref] : [];
+  const matched = deposits.find((d) => depRef(d) === ref);
+  if (!matched) return [];
+  const aliases = new Set<string>([depRef(matched)]);
+  if (matched.txHash && matched.globalIndex > 0) {
+    aliases.add(`:${matched.globalIndex}`);
   }
-  const aliases = new Set<string>([ref, `:${gi}`]);
   for (const deposit of deposits) {
-    if (deposit.globalIndex === gi) aliases.add(depRef(deposit));
+    if (deposit.publicKey === matched.publicKey && deposit.globalIndex === matched.globalIndex) {
+      aliases.add(depRef(deposit));
+    }
   }
-  return deposits.some((d) => d.globalIndex === gi) ? [...aliases] : [];
+  return [...aliases];
 }
 
 /** Wallet-core `addDeposit` keeps one entry per creation `txHash`. */

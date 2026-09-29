@@ -914,6 +914,117 @@ describe("deposit scan + wallet state", () => {
       ["aa".repeat(32), "bb".repeat(32)].sort(),
     );
   });
+
+  it("a type-03 vin with outputIndex 0 spends one deposit by amount (web-wallet)", () => {
+    const a: OwnedDeposit = {
+      amount: 48_252_000_000,
+      globalIndex: 0,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "cd".repeat(32),
+      keys: ["cd".repeat(32)],
+      term: 262_800,
+      blockHeight: 2_076_391,
+      txHash: "aa".repeat(32),
+      interest: 1,
+      unlockHeight: 2_076_391 + 262_800,
+    };
+    const b: OwnedDeposit = {
+      ...a,
+      amount: 10_000_000_000,
+      publicKey: "ce".repeat(32),
+      keys: ["ce".repeat(32)],
+      txHash: "bb".repeat(32),
+    };
+    let state = createWalletState({ address: wallet.address, keys: wallet.keys });
+    state = applyScannedDeposits(state, [a, b]);
+    const withdrawn = findWithdrawnDepRefs(
+      [{ type: "input_to_deposit_key", outputIndex: 0, term: 262_800, amount: a.amount }],
+      state.deposits,
+    );
+    expect(withdrawn).toEqual([depRef(a)]);
+    state = applyScannedDeposits(state, [], withdrawn);
+    expect(state.spentDepositRefs).toContain(depRef(a));
+    expect(state.spentDepositRefs).not.toContain(depRef(b));
+    expect(getLockedDeposits(state, a.blockHeight + 1)).toEqual([
+      expect.objectContaining({ txHash: b.txHash }),
+    ]);
+  });
+
+  it("does not spend every gi=0 row when one amount matches", () => {
+    const a: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 0,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "c1".repeat(32),
+      keys: ["c1".repeat(32)],
+      term: 21_900,
+      blockHeight: 413_401,
+      txHash: "aa".repeat(32),
+      interest: 1,
+      unlockHeight: 413_401 + 21_900,
+    };
+    const b: OwnedDeposit = {
+      ...a,
+      amount: 2e10,
+      publicKey: "c2".repeat(32),
+      keys: ["c2".repeat(32)],
+      txHash: "bb".repeat(32),
+    };
+    let state = createWalletState({ address: wallet.address, keys: wallet.keys });
+    state = applyScannedDeposits(state, [a, b]);
+    state = applyScannedDeposits(state, [], [depRef(a)]);
+    expect(state.spentDepositRefs).toEqual([depRef(a)]);
+    expect(getLockedDeposits(state, 413_401)).toHaveLength(1);
+    expect(getLockedDeposits(state, 413_401)[0]?.txHash).toBe(b.txHash);
+  });
+
+  it("same amount gi=0: one vin spends first match only", () => {
+    const a: OwnedDeposit = {
+      amount: 1e10,
+      globalIndex: 0,
+      outputIndex: 0,
+      txPublicKey: "ab".repeat(32),
+      publicKey: "c1".repeat(32),
+      keys: ["c1".repeat(32)],
+      term: 21_900,
+      blockHeight: 413_401,
+      txHash: "aa".repeat(32),
+      interest: 1,
+      unlockHeight: 413_401 + 21_900,
+    };
+    const b: OwnedDeposit = {
+      ...a,
+      publicKey: "c2".repeat(32),
+      keys: ["c2".repeat(32)],
+      txHash: "bb".repeat(32),
+    };
+    const c: OwnedDeposit = {
+      ...a,
+      publicKey: "c3".repeat(32),
+      keys: ["c3".repeat(32)],
+      txHash: "cc".repeat(32),
+    };
+    const vin = [
+      { type: "input_to_deposit_key" as const, outputIndex: 0, term: 21_900, amount: a.amount },
+    ];
+    let state = createWalletState({ address: wallet.address, keys: wallet.keys });
+    state = applyScannedDeposits(state, [a, b, c]);
+    const first = findWithdrawnDepRefs(vin, state.deposits);
+    expect(first).toEqual([depRef(a)]);
+    state = applyScannedDeposits(state, [], first);
+    expect(state.spentDepositRefs).toEqual([depRef(a)]);
+    expect(getLockedDeposits(state, 413_401).map((d) => d.txHash)).toEqual([b.txHash, c.txHash]);
+
+    const second = findWithdrawnDepRefs(vin, state.deposits, state.spentDepositRefs);
+    expect(second).toEqual([depRef(b)]);
+    state = applyScannedDeposits(state, [], second);
+    expect(state.spentDepositRefs).toEqual([depRef(a), depRef(b)]);
+    expect(getLockedDeposits(state, 413_401)).toEqual([
+      expect.objectContaining({ txHash: c.txHash }),
+    ]);
+  });
 });
 
 // ===========================================================================
