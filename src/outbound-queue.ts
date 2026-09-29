@@ -18,6 +18,10 @@
  *
  * Mirrors the {@link ./sync.createWalletSync} lifecycle: pure orchestration, no
  * timers until {@link start}, no I/O until {@link drainOnce} (or `start`) runs.
+ *
+ * Deprecated — scheduled for removal (see {@link createOutboundQueue}).
+ * {@link OUTBOUND_QUEUE_NAMESPACE} stays exported so hosts can sweep leftover
+ * `outbox:*` keys.
  */
 import { createNamespacedStorage, type StorageAdapter } from "./adapters";
 import type { DaemonClient } from "./daemon";
@@ -83,7 +87,10 @@ export interface EnqueueOptions {
   ttlUnixSeconds?: number;
 }
 
-/** Configuration for {@link createOutboundQueue}. */
+/**
+ * Configuration for {@link createOutboundQueue}.
+ * @deprecated See {@link createOutboundQueue}.
+ */
 export interface OutboundQueueOptions {
   /** Persistence (namespaced under {@link OUTBOUND_QUEUE_NAMESPACE}). */
   storage: StorageAdapter;
@@ -97,7 +104,10 @@ export interface OutboundQueueOptions {
   maxAgeMs?: number;
 }
 
-/** The handle returned by {@link createOutboundQueue}. */
+/**
+ * The handle returned by {@link createOutboundQueue}.
+ * @deprecated See {@link createOutboundQueue}.
+ */
 export interface OutboundQueue {
   /**
    * Persist a built transaction for broadcast. Idempotent on hash (re-enqueue of
@@ -131,6 +141,12 @@ export interface OutboundQueue {
 /**
  * Create an outbound queue controller around a storage adapter + daemon client.
  * Pure orchestration: nothing is read or written until a method is called.
+ *
+ * @deprecated Scheduled for removal. A parked signed tx is invalidated by any
+ * other spend of its inputs, and the daemon reports that only as a bare
+ * `Failed` status, so the queue cannot classify it. Persist the payment intent
+ * (recipient, amount, payment id, message) and rebuild with fresh inputs and
+ * decoys on retry.
  */
 export function createOutboundQueue(opts: OutboundQueueOptions): OutboundQueue {
   if (!opts?.storage) {
