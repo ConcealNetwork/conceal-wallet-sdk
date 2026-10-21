@@ -44,3 +44,15 @@ Verify any claimed daemon response against `conceal-core/src/Rpc` (`RpcServer.cp
   4. **If breaking changes are introduced:** try a PR with the updated `$schema` **and** adapt `biome.json` config keys to the new schema (rename/migrate/remove deprecated fields — run `biome migrate` if available, then hand-verify). Land both the schema URL and the config adaptation in one change.
   5. **If Biome still emits errors after adaptation** (lint/check/types fail on config the new Biome can't reconcile): consider **downgrading `@biomejs/biome` back** to the prior working version and **stop for admin review** — surface the exact errors, the version pair, and the unresolvable config conflict. Do not force a broken upgrade through.
   6. Always run `npm run lint && npm run check` after the schema edit to confirm the diagnostic clears and nothing regressed.
+
+
+## Release discipline — no work left behind
+
+Before any version bump or release (`npm run release`, a `package.json` version change, or publishing the tarball):
+
+1. List all remote branches and identify unmerged `fix/*` / `feature/*` branches whose work is **not** on `main`.
+2. For each unmerged branch, decide explicitly: land it in this release, or record why it is deferred (issue or tracking note). A known-completed fix must never sit unmerged across a release.
+3. Confirm the changelog / release notes cover everything merged since the previous release.
+4. After the release, delete merged or superseded branches so the open-branch list reflects reality.
+
+Precedent: `fix/lowercase-key-images` (completed 2026-08-10) sat unmerged for two months while SDK 0.3.3/0.3.4 shipped, and was only resurfaced by a later repo scan. Do not repeat this.
