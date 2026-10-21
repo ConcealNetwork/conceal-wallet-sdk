@@ -166,12 +166,43 @@ describe("sendRawTransaction", () => {
     });
   });
 
-  it("rejects with the daemon reason on a non-OK status", async () => {
+  it.each(["Failed", "Too big", "Not relayed"])(
+    "resolves (does not throw) with the structured %s status",
+    async (status) => {
+      const client = createDaemonClient({ nodeUrl: NODE, fetch: jsonFetch({ status }) });
+      await expect(client.sendRawTransaction("deadbeef")).resolves.toEqual({ status });
+    },
+  );
+
+  it("passes a daemon reason through on the result without throwing", async () => {
     const client = createDaemonClient({
       nodeUrl: NODE,
       fetch: jsonFetch({ status: "Failed", reason: "double spend" }),
     });
-    await expect(client.sendRawTransaction("deadbeef")).rejects.toThrow(/Failed.*double spend/);
+    await expect(client.sendRawTransaction("deadbeef")).resolves.toEqual({
+      status: "Failed",
+      reason: "double spend",
+    });
+  });
+
+  it("preserves an unknown status string", async () => {
+    const client = createDaemonClient({ nodeUrl: NODE, fetch: jsonFetch({ status: "Weird" }) });
+    await expect(client.sendRawTransaction("deadbeef")).resolves.toEqual({ status: "Weird" });
+  });
+
+  it("rejects a malformed body without a status", async () => {
+    for (const payload of [{}, { status: "" }, { status: 1 }]) {
+      const client = createDaemonClient({ nodeUrl: NODE, fetch: jsonFetch(payload) });
+      await expect(client.sendRawTransaction("deadbeef")).rejects.toThrow(/malformed/i);
+    }
+  });
+
+  it("rejects on an HTTP error (e.g. 500 Core is busy)", async () => {
+    const client = createDaemonClient({
+      nodeUrl: NODE,
+      fetch: jsonFetch({ status: "OK" }, 500),
+    });
+    await expect(client.sendRawTransaction("deadbeef")).rejects.toThrow(/HTTP 500/);
   });
 
   it("rejects on an empty tx hex without calling fetch", async () => {
