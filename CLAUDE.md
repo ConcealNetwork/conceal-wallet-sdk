@@ -48,6 +48,8 @@ Verify any claimed daemon response against `conceal-core/src/Rpc` (`RpcServer.cp
 
 ## Release discipline — no work left behind
 
+Workflow: unless it is an emergency fix, all fixes, features, and dependency updates are worked on and pushed to the `development` branch. After local testing, the version is bumped and a PR is opened, which triggers the CI gate test series and an assistant review — whose comments must surface any leftover discussions, issues, or unmerged PRs so the maintainer merges with full situational awareness.
+
 Before any version bump or release (`npm run release`, a `package.json` version change, or publishing the tarball):
 
 1. List all remote branches and identify unmerged `fix/*` / `feature/*` branches whose work is **not** on `main`.
