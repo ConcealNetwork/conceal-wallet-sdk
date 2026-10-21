@@ -2,26 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Durable outbound transaction queue — a crash-safe relay buffer between tx
- * construction ({@link ./transactions.buildTransaction}) and broadcast
- * ({@link ./daemon.DaemonClient.sendRawTransaction}).
+ * Durable outbound tx queue (build → {@link ./daemon.DaemonClient.sendRawTransaction}).
+ * Status → state mapping: @ref docs/sendrawtransaction.md
  *
- * Each built spend is persisted (one JSON entry per tx, keyed by its hash so
- * re-enqueue is idempotent and there are no random ids) and then drained in
- * timestamp order against the daemon. Rejections (the chain refuses the tx —
- * double-spend / already-spent key image) fail the entry permanently; transient
- * errors are retried on subsequent drains until an optional attempt cap fires.
- *
- * While an entry is `pending` or `broadcast` it RESERVES its input key images —
- * the host feeds {@link reservedKeyImages} into input selection so a queued
- * output is never re-spent (the enqueue-time check here is only a backstop).
- *
- * Mirrors the {@link ./sync.createWalletSync} lifecycle: pure orchestration, no
- * timers until {@link start}, no I/O until {@link drainOnce} (or `start`) runs.
- *
- * Deprecated — scheduled for removal (see {@link createOutboundQueue}).
- * {@link OUTBOUND_QUEUE_NAMESPACE} stays exported so hosts can sweep leftover
- * `outbox:*` keys.
+ * Pending/broadcast entries reserve input key images. Deprecated — see
+ * {@link createOutboundQueue}. {@link OUTBOUND_QUEUE_NAMESPACE} remains for
+ * sweeping leftover `outbox:*` keys.
  */
 import { createNamespacedStorage, type StorageAdapter } from "./adapters";
 import type { DaemonClient } from "./daemon";
@@ -253,8 +239,6 @@ export function createOutboundQueue(opts: OutboundQueueOptions): OutboundQueue {
     const results: OutboundQueueResult[] = [];
 
     for (const entry of candidates) {
-      // Expiry: age-based (maxAgeMs) OR absolute deadline (ttlUnixSeconds). Fail
-      // the entry without ever broadcasting; an expired spend's inputs are freed.
       const expiredByAge = maxAgeMs !== undefined && now - entry.enqueuedAt > maxAgeMs;
       const expiredByTtl =
         entry.ttlUnixSeconds !== undefined &&
@@ -268,39 +252,36 @@ export function createOutboundQueue(opts: OutboundQueueOptions): OutboundQueue {
 
       let result: OutboundQueueResult;
       try {
-        await daemon.sendRawTransaction(entry.serialized);
-        // Keep the entry — it still reserves its inputs until the tx mines; the
-        // host prunes via remove() once it confirms.
-        await persist({ ...entry, state: "broadcast" });
-        result = { id: entry.id, hash: entry.hash, state: "broadcast" };
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (isRejection(error)) {
-          // The chain rejected the tx outright (double-spend / bad signature) —
-          // retrying is pointless. A spent/double-spend hint is a "conflict".
-          const reason: OutboundQueueFailReason = /spent|double/i.test(message)
-            ? "conflict"
-            : "rejected";
-          await persist({ ...entry, state: "failed", failedReason: reason, lastError: message });
-          result = { id: entry.id, hash: entry.hash, state: "failed", error: message };
+        const sent = await daemon.sendRawTransaction(entry.serialized);
+        if (sent.status === "OK" || sent.status === "Not relayed") {
+          await persist({ ...entry, state: "broadcast" });
+          result = { id: entry.id, hash: entry.hash, state: "broadcast" };
         } else {
-          // Transient (network/HTTP/timeout) — retry on the next drain, unless
-          // the attempt cap fires, in which case fail as "rejected".
-          const attempts = entry.attempts + 1;
-          const failed = maxAttempts !== undefined && attempts >= maxAttempts;
+          const message = sent.reason ? `${sent.status} (${sent.reason})` : sent.status;
           await persist({
             ...entry,
-            attempts,
+            state: "failed",
+            failedReason: "rejected",
             lastError: message,
-            ...(failed ? { state: "failed", failedReason: "rejected" } : {}),
           });
-          result = {
-            id: entry.id,
-            hash: entry.hash,
-            state: failed ? "failed" : "pending",
-            error: message,
-          };
+          result = { id: entry.id, hash: entry.hash, state: "failed", error: message };
         }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        const attempts = entry.attempts + 1;
+        const failed = maxAttempts !== undefined && attempts >= maxAttempts;
+        await persist({
+          ...entry,
+          attempts,
+          lastError: message,
+          ...(failed ? { state: "failed", failedReason: "rejected" } : {}),
+        });
+        result = {
+          id: entry.id,
+          hash: entry.hash,
+          state: failed ? "failed" : "pending",
+          error: message,
+        };
       }
       results.push(result);
     }
@@ -352,15 +333,6 @@ export function createOutboundQueue(opts: OutboundQueueOptions): OutboundQueue {
   }
 
   return { enqueue, reservedKeyImages, drainOnce, start, stop, list, cancel, remove };
-}
-
-/**
- * True when the daemon REJECTED the tx (its message matches the sentinel thrown
- * by `DaemonClient.sendRawTransaction` on a non-OK status). A network/HTTP
- * failure throws a structurally different error and is treated as transient.
- */
-function isRejection(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith("Failed to send raw transaction");
 }
 
 /** Narrow an unknown JSON value to a valid {@link OutboundQueueFailReason}. */

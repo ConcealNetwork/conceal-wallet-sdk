@@ -42,6 +42,8 @@ export {
   type DaemonClient,
   type DaemonClientOptions,
   normalizeNodeUrl,
+  type SendRawTransactionResult,
+  type SendRawTransactionStatus,
 } from "./daemon";
 /** Deposits / banking (type-`03`): interest, scan, locked/unlocked state. */
 export * as deposits from "./deposits";

@@ -1,0 +1,46 @@
+---
+description: Development workflow, lean comments, docs refs, validation gate
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Development
+
+## Planning and clarification
+
+- Before non-trivial changes, inspect the relevant code and existing conventions (`CLAUDE.md`, `docs/`, nearby modules).
+- Ask concise clarifying questions when behavior, scope, API, compatibility, or acceptance criteria are ambiguous.
+- Substantial work follows the Forge thin rule (`.cursor/rules/forge.mdc`). Trivial or `/forge:skip` work may proceed directly.
+- Do not invent conceal-core RPC statuses or response fields — verify against `conceal-core` / the daemon facts in `CLAUDE.md`.
+
+## Code and documentation
+
+- Prefer clean, self-explanatory code: meaningful names, small focused functions, straightforward control flow.
+- Do **not** add excessive inline comments or comments that merely restate the code.
+- Prefer a short JSDoc on public / exported APIs only when types and names are not enough (non-obvious contracts, invariants, or failure modes).
+- When deeper explanation already lives under `docs/`, **do not duplicate it in source** — point to it with `@ref docs/<path>` (e.g. `@ref docs/wallet-envelope.md`). Add or extend `docs/` when the topic is too large for a one-line JSDoc.
+- Keep `docs/` changes aligned with implementation changes.
+
+## Testing
+
+- Add or update meaningful tests for every behavior change or bug fix.
+- Use Vitest and the project's existing fixtures / organization under `tests/`.
+- Cover expected behavior, relevant edge cases, and the regression scenario where applicable.
+- Do not claim a change is complete unless those tests were added or updated and run successfully.
+
+## Validation before completion
+
+Before considering work complete, run the project quality gate and fix failures caused by the changes:
+
+```bash
+npm run types
+npm run lint
+npm run format:fix
+npm run check
+npm test
+```
+
+- If a script is missing, say so and run the closest equivalent from `package.json`.
+- After `format:fix`, re-run lint/types/tests if formatting touched source or tests.
+- In the final response, state which checks passed, which were skipped, and why.

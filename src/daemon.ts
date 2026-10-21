@@ -62,9 +62,15 @@ export interface DaemonRawTransaction {
   fee: number;
 }
 
-/** Result of {@link DaemonClient.sendRawTransaction}. */
+/** Known conceal-core `/sendrawtransaction` statuses. @ref docs/sendrawtransaction.md */
+export type SendRawTransactionStatus = "OK" | "Failed" | "Too big" | "Not relayed";
+
+/** Result of {@link DaemonClient.sendRawTransaction}. @ref docs/sendrawtransaction.md */
 export interface SendRawTransactionResult {
-  status: string;
+  /** Known values: {@link SendRawTransactionStatus}; other strings preserved. */
+  status: SendRawTransactionStatus | (string & {});
+  /** Optional; conceal-core does not emit this today. */
+  reason?: string;
 }
 
 /**
@@ -98,7 +104,11 @@ export interface DaemonClient {
   getInfo(): Promise<DaemonInfo>;
   /** Node fee address (`""` when the node charges no fee). */
   getNodeFeeAddress(): Promise<string>;
-  /** Submit a raw, hex-encoded transaction for relay. */
+  /**
+   * Submit a raw hex transaction. Resolves with daemon `status` (callers branch);
+   * throws only on transport / malformed / empty hex.
+   * @ref docs/sendrawtransaction.md
+   */
   sendRawTransaction(txHex: Hex): Promise<SendRawTransactionResult>;
   /** Fetch `count` random decoy outputs for each requested amount. */
   getRandomOuts(amounts: number[], count: number): Promise<DaemonRandomOutsForAmount[]>;
@@ -324,12 +334,13 @@ export function createDaemonClient(opts: DaemonClientOptions): DaemonClient {
       tx_as_hex: txHex,
       do_not_relay: false,
     });
-    if (body.status !== "OK") {
-      const status = typeof body.status === "string" ? body.status : "unknown";
-      const reason = typeof body.reason === "string" ? ` (${body.reason})` : "";
-      throw new Error(`Failed to send raw transaction: ${status}${reason}`);
+    if (typeof body.status !== "string" || body.status.length === 0) {
+      throw new Error("Daemon sendrawtransaction response is malformed (missing status).");
     }
-    return { status: body.status };
+    return {
+      status: body.status,
+      ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
+    };
   }
 
   async function getRandomOuts(

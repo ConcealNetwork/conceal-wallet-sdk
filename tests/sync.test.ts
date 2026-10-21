@@ -260,6 +260,23 @@ describe("extractInputKeyImages", () => {
     expect(extractInputKeyImages(tx)).toEqual(["aa".repeat(32), "bb".repeat(32)]);
   });
 
+  it("rejects upper/mixed-case hex (does not lowercase) and other malformed k_image values", () => {
+    const tx = {
+      vin: [
+        { type: "02", k_image: "AB".repeat(32) }, // upper — reject, do not normalize
+        { type: "02", k_image: "aB".repeat(32) }, // mixed
+        { type: "02", k_image: "not-a-key-image" },
+        { type: "02", k_image: "zz".repeat(32) },
+        { type: "02", k_image: "ab".repeat(31) },
+        { type: "02", value: { k_image: "CD".repeat(32) } },
+        // Present-but-invalid direct must not fall through to nested.
+        { type: "02", k_image: "AB".repeat(32), value: { k_image: "cd".repeat(32) } },
+        { type: "02", k_image: "ef".repeat(32) },
+      ],
+    };
+    expect(extractInputKeyImages(tx)).toEqual(["ef".repeat(32)]);
+  });
+
   it("returns [] for inputs without key images", () => {
     expect(extractInputKeyImages({ vin: [] })).toEqual([]);
     expect(extractInputKeyImages(null)).toEqual([]);

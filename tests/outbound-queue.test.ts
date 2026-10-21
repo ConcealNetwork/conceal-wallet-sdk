@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryStorage, type StorageAdapter } from "../src/adapters";
+import type { SendRawTransactionResult } from "../src/daemon";
 import {
   createOutboundQueue,
   OUTBOUND_QUEUE_NAMESPACE,
@@ -48,7 +49,7 @@ function builtTx(opts: {
 function fakeDaemon() {
   return {
     sendRawTransaction: vi.fn(
-      (_txHex: string): Promise<{ status: string }> => Promise.resolve({ status: "OK" }),
+      (_txHex: string): Promise<SendRawTransactionResult> => Promise.resolve({ status: "OK" }),
     ),
   };
 }
@@ -143,9 +144,7 @@ describe("enqueue + reservedKeyImages", () => {
   });
 
   it("does NOT reserve key images of failed entries", async () => {
-    daemon.sendRawTransaction.mockRejectedValue(
-      new Error("Failed to send raw transaction: FAILED (bad sig)"),
-    );
+    daemon.sendRawTransaction.mockResolvedValue({ status: "Failed" });
     await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
     await q.drainOnce();
     expect(await q.reservedKeyImages()).toEqual(new Set());
@@ -280,39 +279,55 @@ describe("drainOnce — rejection handling", () => {
     q = queue(storage, daemon, { clock: () => now });
   });
 
-  it("marks a double-spend rejection as failed(conflict) and does not retry", async () => {
-    const rejection = new Error("Failed to send raw transaction: FAILED (Key image already spent)");
-    daemon.sendRawTransaction.mockRejectedValue(rejection);
+  it.each(["Failed", "Too big", "Unknown"])(
+    "marks a %s status as failed(rejected) and does not retry",
+    async (status) => {
+      daemon.sendRawTransaction.mockResolvedValue({ status });
+      const id = await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
+
+      const results = await q.drainOnce();
+
+      expect(results).toEqual([{ id, hash: "tx1", state: "failed", error: status }]);
+      const entry = (await q.list()).find((e) => e.id === id) as OutboundQueueEntry;
+      expect(entry.state).toBe("failed");
+      expect(entry.failedReason).toBe("rejected");
+      expect(entry.lastError).toBe(status);
+      expect(entry.attempts).toBe(0); // rejections don't consume an attempt
+
+      // A second drain must not retry a failed entry.
+      await q.drainOnce();
+      expect(daemon.sendRawTransaction).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("never classifies a rejection as conflict, even with a spent-like reason", async () => {
+    daemon.sendRawTransaction.mockResolvedValue({ status: "Failed", reason: "already spent" });
+    await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
+    const results = await q.drainOnce();
+    expect(results[0]?.error).toBe("Failed (already spent)");
+    const entry = (await q.list())[0] as OutboundQueueEntry;
+    expect(entry.failedReason).toBe("rejected");
+    expect(entry.lastError).toBe("Failed (already spent)");
+  });
+
+  it("treats Not relayed as broadcast (no retry, no lastError)", async () => {
+    daemon.sendRawTransaction.mockResolvedValue({ status: "Not relayed" });
     const id = await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
 
     const results = await q.drainOnce();
 
-    expect(results).toEqual([{ id, hash: "tx1", state: "failed", error: rejection.message }]);
-    const entry = (await q.list()).find((e) => e.id === id) as OutboundQueueEntry;
-    expect(entry.state).toBe("failed");
-    expect(entry.failedReason).toBe("conflict");
-    expect(entry.lastError).toBe(rejection.message);
-    expect(entry.attempts).toBe(0); // rejections don't consume an attempt
-
-    // A second drain must not retry a failed entry.
+    expect(results).toEqual([{ id, hash: "tx1", state: "broadcast" }]);
+    const entry = (await q.list())[0] as OutboundQueueEntry;
+    expect(entry.state).toBe("broadcast");
+    expect(entry.lastError).toBeUndefined();
     await q.drainOnce();
     expect(daemon.sendRawTransaction).toHaveBeenCalledTimes(1);
-  });
-
-  it("marks a non-conflict rejection as failed(rejected)", async () => {
-    daemon.sendRawTransaction.mockRejectedValue(
-      new Error("Failed to send raw transaction: REJECTED (bad signature)"),
-    );
-    await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
-    await q.drainOnce();
-    const entry = (await q.list())[0] as OutboundQueueEntry;
-    expect(entry.state).toBe("failed");
-    expect(entry.failedReason).toBe("rejected");
+    expect(await q.reservedKeyImages()).toEqual(new Set([K1]));
   });
 
   it("a rejection for one entry does not stop draining the rest", async () => {
     daemon.sendRawTransaction
-      .mockRejectedValueOnce(new Error("Failed to send raw transaction: FAILED (spent)"))
+      .mockResolvedValueOnce({ status: "Failed" })
       .mockResolvedValueOnce({ status: "OK" });
 
     now = 1;
@@ -521,9 +536,7 @@ describe("cancel + remove", () => {
   });
 
   it("cancel returns false for a failed entry", async () => {
-    daemon.sendRawTransaction.mockRejectedValue(
-      new Error("Failed to send raw transaction: FAILED (spent)"),
-    );
+    daemon.sendRawTransaction.mockResolvedValue({ status: "Failed" });
     const id = await q.enqueue(builtTx({ hash: "tx1", keyImages: [K1] }));
     await q.drainOnce();
     expect(await q.cancel(id)).toBe(false);
