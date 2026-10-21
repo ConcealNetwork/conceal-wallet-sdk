@@ -262,11 +262,19 @@ export function toScanTransaction(rawTx: DaemonRawTransaction): RawTransaction |
   };
 }
 
+/** Canonical daemon key-image hex (conceal-core `common::toHex` is lowercase only). */
+const CANONICAL_KEY_IMAGE_RE = /^[0-9a-f]{64}$/;
+
+function canonicalKeyImage(raw: unknown): string | undefined {
+  return typeof raw === "string" && CANONICAL_KEY_IMAGE_RE.test(raw) ? raw : undefined;
+}
+
 /**
  * Extract every input key image from a raw daemon transaction's `vin`. CryptoNote
  * inputs carry the key image either directly (`vin[i].k_image`) or nested under a
  * `value` object (`vin[i].value.k_image`), matching the legacy daemon shapes.
- * Returns lowercase-hex key images; non-key inputs (e.g. coinbase) are skipped.
+ * Returns only canonical lowercase 64-hex; upper/mixed-case and other malformed
+ * values are rejected (not normalized). Non-key inputs (e.g. coinbase) are skipped.
  */
 export function extractInputKeyImages(transaction: unknown): string[] {
   if (!isRecord(transaction)) return [];
@@ -276,14 +284,19 @@ export function extractInputKeyImages(transaction: unknown): string[] {
   const keyImages: string[] = [];
   for (const input of vin) {
     if (!isRecord(input)) continue;
-    const direct = input.k_image;
-    if (typeof direct === "string" && direct.length > 0) {
+    const direct = canonicalKeyImage(input.k_image);
+    if (direct !== undefined) {
       keyImages.push(direct);
       continue;
     }
+    // Present but non-canonical (e.g. uppercase) — reject; do not fall through.
+    if (typeof input.k_image === "string" && input.k_image.length > 0) {
+      continue;
+    }
     const value = input.value;
-    if (isRecord(value) && typeof value.k_image === "string" && value.k_image.length > 0) {
-      keyImages.push(value.k_image);
+    if (isRecord(value)) {
+      const nested = canonicalKeyImage(value.k_image);
+      if (nested !== undefined) keyImages.push(nested);
     }
   }
   return keyImages;
