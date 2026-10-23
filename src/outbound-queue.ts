@@ -10,7 +10,7 @@
  * sweeping leftover `outbox:*` keys.
  */
 import { createNamespacedStorage, type StorageAdapter } from "./adapters";
-import type { DaemonClient } from "./daemon";
+import { type DaemonClient, formatRelayReject, relayAccepted } from "./daemon";
 import type { BuiltTransaction } from "./transactions";
 import type { Hex } from "./types";
 
@@ -20,8 +20,13 @@ export const OUTBOUND_QUEUE_NAMESPACE = "outbox";
 /** Lifecycle state of a queued broadcast. */
 export type OutboundQueueState = "pending" | "broadcast" | "failed";
 
-/** Why a queued broadcast transitioned to `"failed"`. */
-export type OutboundQueueFailReason = "rejected" | "expired" | "conflict";
+/**
+ * Why a queued broadcast transitioned to `"failed"`. The former `"conflict"`
+ * member was removed — no code path produces it (all non-OK statuses collapse
+ * to `"rejected"`); legacy persisted entries with `"conflict"` are narrowed to
+ * `"rejected"` on parse (see {@link asFailReason}).
+ */
+export type OutboundQueueFailReason = "rejected" | "expired";
 
 /** One persisted queue entry: a built transaction awaiting (or done) broadcast. */
 export interface OutboundQueueEntry {
@@ -253,11 +258,11 @@ export function createOutboundQueue(opts: OutboundQueueOptions): OutboundQueue {
       let result: OutboundQueueResult;
       try {
         const sent = await daemon.sendRawTransaction(entry.serialized);
-        if (sent.status === "OK" || sent.status === "Not relayed") {
+        if (relayAccepted(sent.status)) {
           await persist({ ...entry, state: "broadcast" });
           result = { id: entry.id, hash: entry.hash, state: "broadcast" };
         } else {
-          const message = sent.reason ? `${sent.status} (${sent.reason})` : sent.status;
+          const message = formatRelayReject(sent);
           await persist({
             ...entry,
             state: "failed",
@@ -335,10 +340,18 @@ export function createOutboundQueue(opts: OutboundQueueOptions): OutboundQueue {
   return { enqueue, reservedKeyImages, drainOnce, start, stop, list, cancel, remove };
 }
 
-/** Narrow an unknown JSON value to a valid {@link OutboundQueueFailReason}. */
+/**
+ * Narrow an unknown JSON value to a valid {@link OutboundQueueFailReason}.
+ * Legacy persisted entries may still carry `"conflict"` (removed from the
+ * public union — its only producer was collapsed into `"rejected"`), so that
+ * value is folded into `"rejected"` rather than dropped.
+ */
 function asFailReason(value: unknown): OutboundQueueFailReason | undefined {
-  if (value === "rejected" || value === "expired" || value === "conflict") {
+  if (value === "rejected" || value === "expired") {
     return value;
+  }
+  if (value === "conflict") {
+    return "rejected";
   }
   return undefined;
 }
