@@ -31,12 +31,18 @@ field (clients may send it; the daemon ignores unknown members).
 answered submit (including `Failed` / `Too big` / `Not relayed`). It throws only
 on empty hex, timeout, network/HTTP errors, or a malformed body.
 
-Hosts must branch on `status`. Do not sniff error message text.
+Hosts must branch on `status`. Do not sniff error message text. The SDK exports
+the canonical classification helpers so consumers never re-enumerate statuses:
+
+- `relayAccepted(status)` — `true` for `OK` and `Not relayed` (accepted,
+  queued locally or relayed); `false` for everything else.
+- `formatRelayReject(result)` — human-readable reject text for a non-accepted
+  result: the bare status, or `"STATUS (reason)"` when a reason is present.
 
 ## Outbound queue mapping (deprecated)
 
 | Result | Queue action |
 | --- | --- |
-| `OK` or `Not relayed` | `broadcast` — stop resubmitting; keep key-image reservation until the host `remove()`s after mine. |
-| `Failed`, `Too big`, or unknown status | `failed` / `rejected` (never `conflict` — RPC has no spend detail). |
+| `relayAccepted` (`OK` or `Not relayed`) | `broadcast` — stop resubmitting; keep key-image reservation until the host `remove()`s after mine. |
+| Everything else (`Failed`, `Too big`, unknown status) | `failed` / `rejected` (never `conflict` — RPC has no spend detail). |
 | Thrown transport error | Transient retry until `maxAttempts`. |

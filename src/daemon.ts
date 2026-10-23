@@ -74,6 +74,29 @@ export interface SendRawTransactionResult {
 }
 
 /**
+ * Canonical `/sendrawtransaction` accept predicate — the single definition of
+ * which daemon statuses mean the transaction was accepted: `OK` (accepted +
+ * relayed) or `Not relayed` (accepted locally without gossip, usually already
+ * in the pool/chain). Everything else is a rejection. Hosts and the outbound
+ * queue must branch on this, not re-enumerate statuses.
+ * @ref docs/sendrawtransaction.md
+ */
+export function relayAccepted(status: SendRawTransactionStatus | (string & {})): boolean {
+  return status === "OK" || status === "Not relayed";
+}
+
+/**
+ * Canonical human-readable text for a non-accepted `/sendrawtransaction`
+ * result: the bare status, or `"STATUS (reason)"` when the daemon supplies a
+ * reason (conceal-core does not today).
+ * @ref docs/sendrawtransaction.md
+ */
+export function formatRelayReject(result: SendRawTransactionResult): string {
+  const { status, reason } = result;
+  return reason ? `${status} (${reason})` : status;
+}
+
+/**
  * Node telemetry from the daemon `getinfo` endpoint — numeric/string fields the
  * wallet surfaces (difficulty, peers, mempool, version, last-block time). Fields
  * default to `0`/`""` when a node omits them.
