@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDaemonClient, DEFAULT_TIMEOUT_MS, normalizeNodeUrl } from "../src/daemon";
+import {
+  createDaemonClient,
+  DEFAULT_TIMEOUT_MS,
+  formatRelayReject,
+  normalizeNodeUrl,
+  relayAccepted,
+} from "../src/daemon";
 
 /** Build a `fetch`-compatible mock returning a JSON `Response`. */
 function jsonFetch(payload: unknown, status = 200): typeof fetch {
@@ -13,6 +19,30 @@ function jsonFetch(payload: unknown, status = 200): typeof fetch {
 }
 
 const NODE = "https://node.conceal.network/";
+
+describe("relayAccepted / formatRelayReject", () => {
+  it("accepts OK and Not relayed, rejects everything else", () => {
+    expect(relayAccepted("OK")).toBe(true);
+    expect(relayAccepted("Not relayed")).toBe(true);
+    expect(relayAccepted("Failed")).toBe(false);
+    expect(relayAccepted("Too big")).toBe(false);
+    expect(relayAccepted("BUSY")).toBe(false);
+    expect(relayAccepted("Something new")).toBe(false);
+  });
+
+  it("formats rejects with the bare status when there is no reason", () => {
+    expect(formatRelayReject({ status: "Failed" })).toBe("Failed");
+    expect(formatRelayReject({ status: "Too big" })).toBe("Too big");
+  });
+
+  it("formats rejects as STATUS (reason) when the daemon supplies a reason", () => {
+    expect(formatRelayReject({ status: "Failed", reason: "already spent" })).toBe(
+      "Failed (already spent)",
+    );
+    // An empty reason is treated as absent.
+    expect(formatRelayReject({ status: "Failed", reason: "" })).toBe("Failed");
+  });
+});
 
 describe("normalizeNodeUrl", () => {
   it("appends a trailing slash when missing", () => {
