@@ -8,7 +8,7 @@ import {
   DEPOSIT_MAX_TERM,
   DEPOSIT_MAX_TOTAL_RATE,
   DEPOSIT_MIN_TERM,
-  DEPOSIT_MIN_TERM_V3,
+  DEPOSIT_MIN_TERM_BLOCK,
   DEPOSIT_MIN_TOTAL_RATE_FACTOR,
   END_MULTIPLIER_BLOCK,
   MULTIPLIER_FACTOR,
@@ -84,7 +84,7 @@ export function calculateDepositInterest(input: DepositInterestInput): number {
   }
 
   // Check if this is a V3 deposit (monthly term)
-  if (term % DEPOSIT_MIN_TERM_V3 === 0 && lockHeight > DEPOSIT_HEIGHT_V3) {
+  if (term % DEPOSIT_MIN_TERM_BLOCK === 0 && lockHeight > DEPOSIT_HEIGHT_V3) {
     return calculateInterestV3(amount, term);
   }
 
@@ -128,7 +128,7 @@ function calculateInterestV3(amount: number, term: number): number {
   if (amount4Humans >= 20000) baseInterest = Math.fround(0.049);
 
   // C++: auto months = static_cast<float>(term / m_depositMinTermV3)  (int÷ then float32)
-  let months = Math.fround(Math.trunc(term / DEPOSIT_MIN_TERM_V3));
+  let months = Math.fround(Math.trunc(term / DEPOSIT_MIN_TERM_BLOCK));
   if (months > 12) {
     months = 12;
   }

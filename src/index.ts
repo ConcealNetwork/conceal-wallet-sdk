@@ -41,7 +41,13 @@ export {
   createDaemonClient,
   type DaemonClient,
   type DaemonClientOptions,
+  type DaemonInfo,
+  type DaemonRandomOut,
+  type DaemonRandomOutsForAmount,
+  type DaemonRawTransaction,
+  formatRelayReject,
   normalizeNodeUrl,
+  relayAccepted,
   type SendRawTransactionResult,
   type SendRawTransactionStatus,
 } from "./daemon";

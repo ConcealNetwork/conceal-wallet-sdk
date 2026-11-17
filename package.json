@@ -1,6 +1,6 @@
 {
   "name": "conceal-wallet-sdk",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Conceal (CCX) wallet SDK — framework-agnostic, typed TypeScript wallet engine built on conceal-lib-js primitives.",
   "type": "module",
   "license": "MIT",
@@ -49,7 +49,7 @@
     "@types/node": "^25",
     "tsup": "^8.5.0",
     "typescript": "^6",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "esbuild": "^0.28.1"

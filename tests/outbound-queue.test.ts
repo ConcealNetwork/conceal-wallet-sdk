@@ -578,6 +578,32 @@ describe("list — parse safety", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.id).toBe("good");
   });
+  it("narrows a legacy 'conflict' failedReason to 'rejected' on parse", async () => {
+    const daemon = fakeDaemon();
+    const q = queue(storage, daemon, { clock: () => 5 });
+    await q.enqueue(builtTx({ hash: "legacy", keyImages: [K1] }));
+    const base = storage; // createMemoryStorage IS the base here (no extra wrap)
+    await base.setItem(
+      `${OUTBOUND_QUEUE_NAMESPACE}:legacy`,
+      JSON.stringify({
+        id: "legacy",
+        hash: "legacy",
+        serialized: "legacy",
+        keyImages: [K1],
+        enqueuedAt: 5,
+        state: "failed",
+        attempts: 0,
+        failedReason: "conflict",
+        lastError: "Failed (already spent)",
+      }),
+    );
+
+    const entries = await q.list();
+    expect(entries).toHaveLength(1);
+    const legacy = entries[0] as OutboundQueueEntry;
+    expect(legacy.state).toBe("failed");
+    expect(legacy.failedReason).toBe("rejected");
+  });
 });
 
 describe("start / stop polling", () => {

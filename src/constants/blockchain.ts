@@ -49,8 +49,6 @@ export const DEPOSIT_RATE_V3: readonly number[] = [0.029, 0.039, 0.049];
 export const DEPOSIT_MIN_TERM = 5040;
 /** One year (legacy V1 divisor). */
 export const DEPOSIT_MAX_TERM = 1 * 12 * DEPOSIT_MIN_TERM_BLOCK;
-/** One month — same as {@link DEPOSIT_MIN_TERM_BLOCK}. */
-export const DEPOSIT_MIN_TERM_V3 = DEPOSIT_MIN_TERM_BLOCK;
 /** Constant rate factor for legacy V1 deposits. */
 export const DEPOSIT_MIN_TOTAL_RATE_FACTOR = 0;
 /** Legacy deposits max total rate. */
