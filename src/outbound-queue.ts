@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Durable outbound tx queue (build → {@link ./daemon.DaemonClient.sendRawTransaction}).
- * Status → state mapping: @ref docs/sendrawtransaction.md
- *
- * Pending/broadcast entries reserve input key images. Deprecated — see
- * {@link createOutboundQueue}. {@link OUTBOUND_QUEUE_NAMESPACE} remains for
- * sweeping leftover `outbox:*` keys.
+ * Why a queued broadcast transitioned to `"failed"`. The former `"conflict"`
+ * member was removed — no code path produces it (every status
+ * {@link relayAccepted} rejects collapses to `"rejected"`); legacy persisted
+ * entries with `"conflict"` are narrowed to `"rejected"` on parse (see
+ * {@link asFailReason}).
  */
 import { createNamespacedStorage, type StorageAdapter } from "./adapters";
 import { type DaemonClient, formatRelayReject, relayAccepted } from "./daemon";
