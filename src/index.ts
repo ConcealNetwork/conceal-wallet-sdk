@@ -41,14 +41,11 @@ export {
   createDaemonClient,
   type DaemonClient,
   type DaemonClientOptions,
-<<<<<<< HEAD
-  formatRelayReject,
-=======
   type DaemonInfo,
   type DaemonRandomOut,
   type DaemonRandomOutsForAmount,
   type DaemonRawTransaction,
->>>>>>> ae299dc (refactor: drop duplicate deposit term constant and export daemon types)
+  formatRelayReject,
   normalizeNodeUrl,
   relayAccepted,
   type SendRawTransactionResult,
